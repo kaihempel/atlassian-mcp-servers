@@ -1,0 +1,1 @@
+# Confluence and Jira MCP Server 

@@ -1,0 +1,19 @@
+{
+  "name": "atlassian-mcp-servers",
+  "version": "1.0.0",
+  "description": "MCP Servers for Jira and Confluence integration",
+  "type": "module",
+  "scripts": {
+    "start:jira": "node src/jira-server.js",
+    "start:confluence": "node src/confluence-server.js",
+    "dev:jira": "node --inspect src/jira-server.js",
+    "dev:confluence": "node --inspect src/confluence-server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
