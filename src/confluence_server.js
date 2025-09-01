@@ -6,6 +6,11 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import fetch from 'node-fetch';
 
 class ConfluenceMCPServer {
+  // Constants for task extraction
+  static TASK_MIN_LENGTH = 3;
+  static TASK_MAX_LENGTH = 500;
+  static MAX_TASKS_PER_PAGE = 5;
+  
   constructor() {
     this.server = new Server(
         {
@@ -28,6 +33,9 @@ class ConfluenceMCPServer {
       console.error('Missing required environment variables: CONFLUENCE_URL, CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN');
       process.exit(1);
     }
+    
+    // Cache for API version availability
+    this._v2ApiAvailable = null;
 
     this.setupToolHandlers();
   }
@@ -466,27 +474,41 @@ class ConfluenceMCPServer {
     );
 
     const taskPages = [];
-
-    for (const result of response.results.filter(r => r.content.type === 'page')) {
-      // Get full page content to extract tasks
-      const pageContent = await this.makeConfluenceRequest(
-          `/content/${result.content.id}?expand=body.storage`
-      );
-
-      const content = this.stripHtmlTags(pageContent.body.storage.value);
-      const extractedTasks = this.extractTasksFromContent(content);
-
-      if (extractedTasks.length > 0) {
-        taskPages.push({
-          id: result.content.id,
-          title: result.content.title,
-          space: result.content.space.name,
-          lastUpdated: result.content.history.lastUpdated.when,
-          url: `${this.confluenceUrl}${result.content._links.webui}`,
-          extractedTasks: extractedTasks.slice(0, 5), // Limit to 5 tasks per page
-          taskCount: extractedTasks.length,
-          priority: this.calculatePageTaskPriority(result.content.title, content),
-        });
+    const pageResults = response.results.filter(r => r.content.type === 'page');
+    
+    // Process pages in parallel for better performance
+    const pagePromises = pageResults.map(async (result) => {
+      try {
+        const pageContent = await this.makeConfluenceRequest(
+            `/content/${result.content.id}?expand=body.storage`
+        );
+        
+        const content = this.stripHtmlTags(pageContent.body.storage.value);
+        const extractedTasks = this.extractTasksFromContent(content);
+        
+        if (extractedTasks.length > 0) {
+          return {
+            id: result.content.id,
+            title: result.content.title,
+            space: result.content.space.name,
+            lastUpdated: result.content.history.lastUpdated.when,
+            url: `${this.confluenceUrl}${result.content._links.webui}`,
+            extractedTasks: extractedTasks.slice(0, ConfluenceMCPServer.MAX_TASKS_PER_PAGE), // Limit to max tasks per page
+            taskCount: extractedTasks.length,
+            priority: this.calculatePageTaskPriority(result.content.title, content),
+          };
+        }
+        return null;
+      } catch (error) {
+        console.warn(`Failed to process page ${result.content.id}: ${error.message}`);
+        return null;
+      }
+    });
+    
+    const results = await Promise.allSettled(pagePromises);
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value) {
+        taskPages.push(result.value);
       }
     }
 
@@ -533,4 +555,610 @@ class ConfluenceMCPServer {
       ],
     };
   }
+
+  async getPageComments(args) {
+    const {pageId} = args;
+
+    try {
+      // Using v2 API for comments
+      const url = `${this.confluenceUrl}/api/v2/pages/${pageId}/footer-comments`;
+      const response = await fetch(url, {
+        headers: this.getAuthHeaders(),
+      });
+
+      if (!response.ok) {
+        // Fallback to v1 API if v2 fails
+        const v1Response = await this.makeConfluenceRequest(
+          `/content/${pageId}/child/comment?expand=history,version,body.view`
+        );
+
+        const comments = v1Response.results.map(comment => ({
+          id: comment.id,
+          author: comment.history.createdBy.displayName,
+          authorEmail: comment.history.createdBy.email,
+          createdDate: comment.history.createdDate,
+          content: this.stripHtmlTags(comment.body.view.value || ''),
+          version: comment.version.number,
+        }));
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                pageId,
+                totalComments: v1Response.size,
+                comments
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      const v2Data = await response.json();
+      const comments = v2Data.results.map(comment => ({
+        id: comment.id,
+        author: comment.version?.createdBy?.publicName || 'Unknown',
+        authorEmail: comment.version?.createdBy?.email,
+        createdDate: comment.version?.createdAt,
+        content: this.stripHtmlTags(comment.body?.value || ''),
+        version: comment.version?.number,
+      }));
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              pageId,
+              totalComments: comments.length,
+              comments
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new Error(`Failed to get page comments: ${error.message}`);
+    }
+  }
+
+  async createPage(args) {
+    const {spaceKey, title, content, parentPageId} = args;
+    
+    // Input validation
+    if (!spaceKey || !title || !content) {
+      throw new Error('Missing required parameters: spaceKey, title, and content are required');
+    }
+    
+    if (title.length > 255) {
+      throw new Error('Title exceeds maximum length of 255 characters');
+    }
+    
+    if (!/^[A-Z0-9]+$/i.test(spaceKey)) {
+      throw new Error('Invalid spaceKey format. Space keys should contain only alphanumeric characters');
+    }
+
+    try {
+      // Check if we should use v2 API
+      const useV2 = await this.checkV2ApiAvailability();
+      
+      if (useV2) {
+        // Using v2 API
+        const url = `${this.confluenceUrl}/api/v2/pages`;
+        
+        const requestBody = {
+          spaceId: await this.getSpaceIdFromKey(spaceKey),
+          status: 'current',
+          title: title,
+          body: {
+            representation: 'storage',
+            value: this.ensureStorageFormat(content)
+          }
+        };
+
+        if (parentPageId) {
+          requestBody.parentId = parentPageId;
+        }
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: this.getAuthHeaders(),
+          body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Failed to create page (v2): ${response.status} - ${errorText}`);
+        }
+
+        const createdPage = await response.json();
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                pageId: createdPage.id,
+                title: createdPage.title,
+                version: createdPage.version?.number,
+                url: `${this.confluenceUrl}/wiki/spaces/${spaceKey}/pages/${createdPage.id}`,
+                message: 'Page created successfully using v2 API'
+              }, null, 2),
+            },
+          ],
+        };
+      } else {
+        // Fallback to v1 API
+        const requestBody = {
+          type: 'page',
+          title: title,
+          space: {
+            key: spaceKey
+          },
+          body: {
+            storage: {
+              value: this.ensureStorageFormat(content),
+              representation: 'storage'
+            }
+          }
+        };
+
+        if (parentPageId) {
+          requestBody.ancestors = [{id: parentPageId}];
+        }
+
+        const response = await this.makeConfluenceRequest('/content', {
+          method: 'POST',
+          body: JSON.stringify(requestBody)
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                pageId: response.id,
+                title: response.title,
+                version: response.version.number,
+                url: `${this.confluenceUrl}${response._links.webui}`,
+                message: 'Page created successfully using v1 API'
+              }, null, 2),
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      throw new Error(`Failed to create page: ${error.message}`);
+    }
+  }
+
+  async updatePage(args) {
+    const {pageId, title, content} = args;
+    
+    // Input validation
+    if (!pageId || !content) {
+      throw new Error('Missing required parameters: pageId and content are required');
+    }
+    
+    if (title && title.length > 255) {
+      throw new Error('Title exceeds maximum length of 255 characters');
+    }
+    
+    if (!/^\d+$/.test(pageId)) {
+      throw new Error('Invalid pageId format. Page ID should be numeric');
+    }
+
+    try {
+      // First get the current page to get version number
+      const currentPage = await this.makeConfluenceRequest(
+        `/content/${pageId}?expand=version,space`
+      );
+
+      // Check if we should use v2 API
+      const useV2 = await this.checkV2ApiAvailability();
+
+      if (useV2) {
+        // Using v2 API
+        const url = `${this.confluenceUrl}/api/v2/pages/${pageId}`;
+        
+        const requestBody = {
+          id: pageId,
+          status: 'current',
+          title: title || currentPage.title,
+          body: {
+            representation: 'storage',
+            value: this.ensureStorageFormat(content)
+          },
+          version: {
+            number: currentPage.version.number + 1,
+            message: 'Updated via MCP server'
+          }
+        };
+
+        const response = await fetch(url, {
+          method: 'PUT',
+          headers: this.getAuthHeaders(),
+          body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Failed to update page (v2): ${response.status} - ${errorText}`);
+        }
+
+        const updatedPage = await response.json();
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                pageId: updatedPage.id,
+                title: updatedPage.title,
+                version: updatedPage.version?.number,
+                url: `${this.confluenceUrl}/wiki/spaces/${currentPage.space.key}/pages/${updatedPage.id}`,
+                message: 'Page updated successfully using v2 API'
+              }, null, 2),
+            },
+          ],
+        };
+      } else {
+        // Fallback to v1 API
+        const requestBody = {
+          id: pageId,
+          type: 'page',
+          title: title || currentPage.title,
+          space: {
+            key: currentPage.space.key
+          },
+          body: {
+            storage: {
+              value: this.ensureStorageFormat(content),
+              representation: 'storage'
+            }
+          },
+          version: {
+            number: currentPage.version.number + 1,
+            message: 'Updated via MCP server'
+          }
+        };
+
+        const response = await this.makeConfluenceRequest(`/content/${pageId}`, {
+          method: 'PUT',
+          body: JSON.stringify(requestBody)
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                pageId: response.id,
+                title: response.title,
+                version: response.version.number,
+                url: `${this.confluenceUrl}${response._links.webui}`,
+                message: 'Page updated successfully using v1 API'
+              }, null, 2),
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      throw new Error(`Failed to update page: ${error.message}`);
+    }
+  }
+
+  async createTaskPage(args) {
+    const {spaceKey, title, tasks, parentPageId} = args;
+
+    try {
+      // Generate page title if not provided
+      const pageTitle = title || `Tasks - ${new Date().toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      })}`;
+
+      // Build the task page content in Confluence storage format
+      let content = '<h1>Task List</h1>';
+      content += '<p>Generated on: ' + new Date().toLocaleString() + '</p>';
+      
+      // Group tasks by priority
+      const tasksByPriority = {
+        High: [],
+        Medium: [],
+        Low: [],
+        undefined: []
+      };
+
+      tasks.forEach(task => {
+        const priority = task.priority || 'undefined';
+        tasksByPriority[priority].push(task);
+      });
+
+      // Add tasks grouped by priority
+      ['High', 'Medium', 'Low', 'undefined'].forEach(priority => {
+        if (tasksByPriority[priority].length > 0) {
+          const displayPriority = priority === 'undefined' ? 'Unprioritized' : priority;
+          content += `<h2>${displayPriority} Priority Tasks</h2>`;
+          content += '<ac:task-list>';
+          
+          tasksByPriority[priority].forEach(task => {
+            content += '<ac:task>';
+            content += '<ac:task-status>incomplete</ac:task-status>';
+            content += '<ac:task-body>';
+            content += `<strong>${this.escapeHtml(task.title)}</strong>`;
+            
+            if (task.description) {
+              content += `<p>${this.escapeHtml(task.description)}</p>`;
+            }
+            
+            const metadata = [];
+            if (task.dueDate) {
+              metadata.push(`Due: ${task.dueDate}`);
+            }
+            if (task.assignee) {
+              metadata.push(`Assignee: ${task.assignee}`);
+            }
+            if (task.source) {
+              metadata.push(`Source: ${task.source}`);
+            }
+            
+            if (metadata.length > 0) {
+              const escapedMetadata = metadata.map(m => this.escapeHtml(m));
+              content += `<p><em>${escapedMetadata.join(' | ')}</em></p>`;
+            }
+            
+            content += '</ac:task-body>';
+            content += '</ac:task>';
+          });
+          
+          content += '</ac:task-list>';
+        }
+      });
+
+      // Add summary table
+      content += '<h2>Summary</h2>';
+      content += '<table>';
+      content += '<thead><tr><th>Priority</th><th>Count</th></tr></thead>';
+      content += '<tbody>';
+      ['High', 'Medium', 'Low', 'undefined'].forEach(priority => {
+        const count = tasksByPriority[priority].length;
+        if (count > 0) {
+          const displayPriority = priority === 'undefined' ? 'Unprioritized' : priority;
+          content += `<tr><td>${displayPriority}</td><td>${count}</td></tr>`;
+        }
+      });
+      content += `<tr><td><strong>Total</strong></td><td><strong>${tasks.length}</strong></td></tr>`;
+      content += '</tbody></table>';
+
+      // Create the page using the existing createPage method
+      return await this.createPage({
+        spaceKey,
+        title: pageTitle,
+        content,
+        parentPageId
+      });
+    } catch (error) {
+      throw new Error(`Failed to create task page: ${error.message}`);
+    }
+  }
+
+  // Helper methods
+  stripHtmlTags(html) {
+    if (!html) return '';
+    
+    // Remove Confluence-specific macros and structures
+    let text = html.replace(/<ac:[^>]*>/g, '');
+    text = text.replace(/<\/ac:[^>]*>/g, '');
+    text = text.replace(/<ri:[^>]*>/g, '');
+    text = text.replace(/<\/ri:[^>]*>/g, '');
+    
+    // Remove HTML tags but preserve line breaks
+    text = text.replace(/<br\s*\/?>/gi, '\n');
+    text = text.replace(/<\/p>/gi, '\n\n');
+    text = text.replace(/<\/div>/gi, '\n');
+    text = text.replace(/<\/h[1-6]>/gi, '\n\n');
+    text = text.replace(/<li>/gi, '\n• ');
+    text = text.replace(/<\/li>/gi, '');
+    
+    // Remove all remaining HTML tags
+    text = text.replace(/<[^>]*>/g, '');
+    
+    // Decode HTML entities
+    text = text.replace(/&nbsp;/g, ' ');
+    text = text.replace(/&lt;/g, '<');
+    text = text.replace(/&gt;/g, '>');
+    text = text.replace(/&amp;/g, '&');
+    text = text.replace(/&quot;/g, '"');
+    text = text.replace(/&#39;/g, "'");
+    
+    // Clean up excessive whitespace
+    text = text.replace(/\n{3,}/g, '\n\n');
+    text = text.replace(/[ \t]{2,}/g, ' ');
+    
+    return text.trim();
+  }
+
+  extractTasksFromContent(content) {
+    const tasks = [];
+    
+    // Pattern for tasks/action items with various markers
+    const taskPatterns = [
+      /(?:^|\n)\s*[-*•]\s*\[\s*\]\s*(.+)/gm,  // Unchecked checkbox format
+      /(?:^|\n)\s*[-*•]\s*TODO:?\s*(.+)/gmi,    // TODO markers
+      /(?:^|\n)\s*[-*•]\s*ACTION:?\s*(.+)/gmi,  // ACTION markers
+      /(?:^|\n)\s*[-*•]\s*TASK:?\s*(.+)/gmi,    // TASK markers
+      /(?:^|\n)\s*\d+\.\s*TODO:?\s*(.+)/gmi,   // Numbered TODOs
+      /(?:^|\n)\s*\d+\.\s*ACTION:?\s*(.+)/gmi, // Numbered ACTIONs
+      /ACTION ITEM:?\s*(.+?)(?:\n|$)/gi,         // ACTION ITEM markers
+      /@[\w]+\s+to\s+(.+?)(?:\n|$)/gi,          // @mention tasks
+    ];
+
+    // Look for task sections
+    const sectionPatterns = [
+      /(?:action items?|tasks?|todo list|next steps)[:\s]*\n([^\n]+(?:\n[^\n]+)*?)(?:\n\n|$)/gi,
+      /(?:decisions?|follow[- ]?ups?)[:\s]*\n([^\n]+(?:\n[^\n]+)*?)(?:\n\n|$)/gi
+    ];
+
+    // Extract tasks using patterns
+    taskPatterns.forEach(pattern => {
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        const taskText = match[1].trim();
+        if (taskText && taskText.length > ConfluenceMCPServer.TASK_MIN_LENGTH && taskText.length < ConfluenceMCPServer.TASK_MAX_LENGTH) {
+          // Filter out likely non-tasks
+          if (!taskText.match(/^(the|and|or|but|if|when|where|why|how|what|who)\s/i)) {
+            tasks.push({
+              text: taskText,
+              type: 'action_item'
+            });
+          }
+        }
+      }
+    });
+
+    // Extract from sections
+    sectionPatterns.forEach(pattern => {
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        const sectionContent = match[1];
+        const lines = sectionContent.split('\n');
+        lines.forEach(line => {
+          const trimmedLine = line.replace(/^\s*[-*•\d.]+\s*/, '').trim();
+          if (trimmedLine && trimmedLine.length > ConfluenceMCPServer.TASK_MIN_LENGTH && trimmedLine.length < ConfluenceMCPServer.TASK_MAX_LENGTH) {
+            tasks.push({
+              text: trimmedLine,
+              type: 'section_item'
+            });
+          }
+        });
+      }
+    });
+
+    // Remove duplicates
+    const uniqueTasks = [];
+    const seen = new Set();
+    tasks.forEach(task => {
+      const normalized = task.text.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        uniqueTasks.push(task);
+      }
+    });
+
+    return uniqueTasks;
+  }
+
+  calculatePageTaskPriority(title, content) {
+    let priority = 0;
+    
+    // Title indicators
+    if (title.match(/urgent|critical|important|priority|asap/i)) {
+      priority += 10;
+    }
+    if (title.match(/meeting|minutes|action/i)) {
+      priority += 5;
+    }
+    if (title.match(/\d{4}-\d{2}-\d{2}|today|tomorrow|this week/i)) {
+      priority += 3;
+    }
+    
+    // Content indicators
+    const urgentMatches = (content.match(/urgent|critical|asap|immediately/gi) || []).length;
+    priority += urgentMatches * 2;
+    
+    const deadlineMatches = (content.match(/deadline|due date|by [a-z]+ \d+|before [a-z]+/gi) || []).length;
+    priority += deadlineMatches * 3;
+    
+    const actionMatches = (content.match(/action item|todo|task|follow[- ]?up|next step/gi) || []).length;
+    priority += Math.min(actionMatches, 10); // Cap at 10 to avoid inflation
+    
+    // Check for @mentions (usually indicates assigned tasks)
+    const mentionMatches = (content.match(/@[a-zA-Z]+/g) || []).length;
+    priority += mentionMatches * 2;
+    
+    return priority;
+  }
+
+  async checkV2ApiAvailability() {
+    // Return cached result if available
+    if (this._v2ApiAvailable !== null) {
+      return this._v2ApiAvailable;
+    }
+    
+    try {
+      // Try a simple v2 API call to check availability
+      const url = `${this.confluenceUrl}/api/v2/spaces?limit=1`;
+      const response = await fetch(url, {
+        headers: this.getAuthHeaders(),
+      });
+      this._v2ApiAvailable = response.ok;
+      return this._v2ApiAvailable;
+    } catch {
+      this._v2ApiAvailable = false;
+      return false;
+    }
+  }
+
+  async getSpaceIdFromKey(spaceKey) {
+    try {
+      // Try v2 API first
+      const url = `${this.confluenceUrl}/api/v2/spaces?keys=${spaceKey}`;
+      const response = await fetch(url, {
+        headers: this.getAuthHeaders(),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.results && data.results.length > 0) {
+          return data.results[0].id;
+        }
+      }
+      
+      // Fallback to v1 API
+      const v1Response = await this.makeConfluenceRequest(`/space/${spaceKey}`);
+      return v1Response.id;
+    } catch (error) {
+      throw new Error(`Failed to get space ID for key ${spaceKey}: ${error.message}`);
+    }
+  }
+
+  ensureStorageFormat(content) {
+    // If content doesn't contain any HTML tags, wrap it in a paragraph
+    if (!content.match(/<[^>]+>/)) {
+      return `<p>${content}</p>`;
+    }
+    return content;
+  }
+
+  escapeHtml(text) {
+    const map = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    };
+    return text.replace(/[&<>"']/g, m => map[m]);
+  }
+
+  async run() {
+    const transport = new StdioServerTransport();
+    await this.server.connect(transport);
+    console.error('Confluence MCP server running on stdio');
+  }
+}
+
+// Export the class for testing
+export { ConfluenceMCPServer };
+
+// Initialize and run the server only if this is the main module
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const server = new ConfluenceMCPServer();
+  server.run().catch(console.error);
 }
