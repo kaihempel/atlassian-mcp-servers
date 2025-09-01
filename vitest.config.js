@@ -23,7 +23,8 @@ export default defineConfig({
         '**/dist/**'
       ],
       include: [
-        'src/confluence_server.js'  // Only include confluence server for now
+        'src/confluence_server.js',
+        'src/jira_server.js'
       ],
       all: true,
       lines: 80,
