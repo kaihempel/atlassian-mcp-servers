@@ -11,7 +11,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm dev:confluence` - Start Confluence server with Node.js debugger enabled
 
 ### Testing
-- No test command configured yet (vitest is installed as a devDependency)
+- `npm test` - Run tests with Vitest
+- `npm run test:ui` - Run tests with Vitest UI
+- `npm run test:run` - Run tests once without watching
+- `npm run test:coverage` - Run tests with coverage report
 
 ## Architecture
 
@@ -26,6 +29,8 @@ Both servers:
 - Require environment variables for authentication (API tokens)
 - Implement tool handlers for various operations
 - Use node-fetch for making API calls to Atlassian services
+- Export server classes for testing purposes
+- Include comprehensive test suites with Vitest
 
 ### Environment Variables Required
 
@@ -39,7 +44,70 @@ Both servers:
 - `CONFLUENCE_EMAIL` - Your Atlassian account email
 - `CONFLUENCE_API_TOKEN` - Confluence API token for authentication
 
+## Available Tools
+
+### Jira Server Tools
+- `get_assigned_issues` - Get issues assigned to the current user
+- `search_issues` - Search issues using JQL (Jira Query Language)
+- `get_issue_details` - Get detailed information about a specific issue
+- `get_recent_issues` - Get recently created or updated issues
+- `get_my_tasks` - Get all tasks assigned to me with priority and due date info
+- `get_project_issues` - Get issues from a specific project
+
+### Confluence Server Tools
+- `search_pages` - Search Confluence pages by title or content
+- `get_page_content` - Get full content of a specific page
+- `get_recent_pages` - Get recently created or updated pages
+- `get_my_pages` - Get pages created or modified by the current user
+- `get_page_tasks` - Extract tasks and action items from Confluence pages
+- `get_spaces` - Get list of available Confluence spaces
+- `get_page_comments` - Get comments for a specific page
+- `create_page` - Create a new Confluence page
+- `update_page` - Update an existing Confluence page
+- `create_task_page` - Create a dedicated task/todo page with structured format
+
 ### Key Dependencies
 - `@modelcontextprotocol/sdk` - MCP SDK for building servers
 - `node-fetch` - HTTP client for API calls
+- `vitest` - Testing framework (dev dependency)
+- `@vitest/coverage-v8` - Coverage reporter (dev dependency)
 - Node.js >= 18.0.0 required
+
+## Testing
+
+The project includes comprehensive test suites for both servers using Vitest:
+
+- **Test Files**: Located in `src/__tests__/`
+  - `jira_server.test.js` - Tests for Jira MCP server functionality
+  - `confluence_server.test.js` - Tests for Confluence MCP server functionality
+
+- **Test Coverage**: Tests include:
+  - Server initialization and configuration
+  - Authentication and API communication
+  - All tool handlers and their error cases
+  - Task priority calculation algorithms
+  - HTML/text processing utilities
+  - API fallback mechanisms (v2 to v1)
+  - Integration tests for complete workflows
+
+## Advanced Features
+
+### Jira Server
+- **Task Priority Calculation**: Automatically calculates task priority based on:
+  - Issue priority level (Highest, High, Medium, Low, Lowest)
+  - Due dates and overdue status
+  - Issue type (Bug, Story, Task)
+- **Smart Sorting**: Tasks are sorted by calculated priority for better productivity
+- **Comprehensive Issue Details**: Includes components, labels, fix versions, and comments
+
+### Confluence Server
+- **Task Extraction**: Automatically extracts tasks and action items from page content using pattern matching for:
+  - Checkbox formats (`- [ ] Task`)
+  - TODO markers (`TODO: Task`)
+  - ACTION items (`ACTION: Task`)
+  - @mention assignments (`@user to do something`)
+  - Structured sections (Action Items, Next Steps, etc.)
+- **API Compatibility**: Supports both Confluence v1 and v2 APIs with automatic fallback
+- **Content Processing**: Advanced HTML stripping and text processing utilities
+- **Task Page Creation**: Creates structured task pages with priority grouping and summary tables
+- **Security**: Includes HTML escaping to prevent XSS in generated content
