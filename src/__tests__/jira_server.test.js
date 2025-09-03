@@ -156,11 +156,12 @@ describe('JiraMCPServer', () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 401,
-        statusText: 'Unauthorized'
+        statusText: 'Unauthorized',
+        text: vi.fn().mockResolvedValue('Unauthorized: Invalid credentials')
       });
 
       await expect(server.makeJiraRequest('/search'))
-        .rejects.toThrow('Jira API error: 401 Unauthorized');
+        .rejects.toThrow('Authentication failed');
     });
   });
 
@@ -984,22 +985,24 @@ describe('JiraMCPServer', () => {
   });
 
   describe('Error Handling', () => {
-    it('should handle API authentication errors', async () => {
+    it('should handle API authentication errors (401)', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 401,
-        statusText: 'Unauthorized'
+        statusText: 'Unauthorized',
+        text: vi.fn().mockResolvedValue('401: Authentication credentials are invalid')
       });
 
       await expect(server.getAssignedIssues({}))
-        .rejects.toThrow('Jira API error: 401 Unauthorized');
+        .rejects.toThrow('Authentication failed. Please check your JIRA_EMAIL and JIRA_API_TOKEN');
     });
 
-    it('should handle API rate limiting errors', async () => {
+    it('should handle API rate limiting errors (429)', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 429,
-        statusText: 'Too Many Requests'
+        statusText: 'Too Many Requests',
+        text: vi.fn().mockResolvedValue('Rate limit exceeded. Please wait before making another request.')
       });
 
       await expect(server.searchIssues({ jql: 'test' }))
@@ -1027,22 +1030,71 @@ describe('JiraMCPServer', () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 404,
-        statusText: 'Not Found'
+        statusText: 'Not Found',
+        text: vi.fn().mockResolvedValue('{"errorMessages": ["Issue NONEXISTENT-999 does not exist or you do not have permission to see it."]}')
       });
 
       await expect(server.getIssueDetails({ issueKey: 'NONEXISTENT-999' }))
-        .rejects.toThrow('Jira API error: 404 Not Found');
+        .rejects.toThrow('Issue NONEXISTENT-999 does not exist or you do not have permission to see it.');
     });
 
-    it('should handle server errors', async () => {
+    it('should handle server errors (500)', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 500,
-        statusText: 'Internal Server Error'
+        statusText: 'Internal Server Error',
+        text: vi.fn().mockResolvedValue('An unexpected error occurred processing your request.')
       });
 
       await expect(server.getProjectIssues({ projectKey: 'PROJ' }))
         .rejects.toThrow('Jira API error: 500 Internal Server Error');
+    });
+
+    it('should handle 410 Gone errors with v2 fallback', async () => {
+      // First call returns 410, second call (fallback to v2) succeeds
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 410,
+        statusText: 'Gone',
+        text: vi.fn().mockResolvedValue('This API version is no longer supported.')
+      }).mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ issues: [] })
+      });
+
+      // It should fallback to v2 and succeed
+      const result = await server.makeJiraRequest('/search');
+      expect(result).toEqual({ issues: [] });
+      
+      // Verify it made two calls - first to v3, then to v2
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenNthCalledWith(1, 
+        expect.stringContaining('/rest/api/3/search'),
+        expect.any(Object)
+      );
+      expect(mockFetch).toHaveBeenNthCalledWith(2, 
+        expect.stringContaining('/rest/api/2/search'),
+        expect.any(Object)
+      );
+    });
+
+    it('should handle 410 Gone errors when v2 also fails', async () => {
+      // Both v3 and v2 return 410
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 410,
+        statusText: 'Gone',
+        text: vi.fn().mockResolvedValue('This API version is no longer supported.')
+      }).mockResolvedValueOnce({
+        ok: false,
+        status: 410,
+        statusText: 'Gone',
+        text: vi.fn().mockResolvedValue('This API version is no longer supported.')
+      });
+
+      // It should throw error when both versions fail
+      await expect(server.makeJiraRequest('/search'))
+        .rejects.toThrow('Jira API endpoint no longer available (410 Gone)');
     });
   });
 

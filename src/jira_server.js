@@ -30,7 +30,47 @@ export class JiraMCPServer {
       process.exit(1);
     }
 
+    // Normalize the Jira URL and determine API version
+    this.normalizeJiraUrl();
+    
+    // Enable debug logging if DEBUG environment variable is set
+    this.debug = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
+    
+    if (this.debug) {
+      console.error(`[DEBUG] Initialized Jira MCP Server`);
+      console.error(`[DEBUG] Base URL: ${this.baseUrl}`);
+      console.error(`[DEBUG] API Version: ${this.apiVersion}`);
+      console.error(`[DEBUG] Email: ${this.jiraEmail}`);
+    }
+
     this.setupToolHandlers();
+  }
+
+  normalizeJiraUrl() {
+    // Remove trailing slash if present
+    let url = this.jiraUrl.replace(/\/$/, '');
+    
+    // Check if the URL already includes an API path
+    if (url.includes('/rest/api/')) {
+      // Extract base URL and API version from the provided URL
+      const match = url.match(/^(.*?)(\/rest\/api\/\d+)$/);
+      if (match) {
+        this.baseUrl = match[1];
+        const apiPath = match[2];
+        this.apiVersion = apiPath.includes('/3') ? 3 : 2;
+      } else {
+        // Fallback if pattern doesn't match
+        this.baseUrl = url;
+        this.apiVersion = 3;
+      }
+    } else {
+      // URL is just the base domain
+      this.baseUrl = url;
+      this.apiVersion = 3; // Default to v3, will fallback to v2 if needed
+    }
+    
+    // Ensure baseUrl doesn't have trailing slash
+    this.baseUrl = this.baseUrl.replace(/\/$/, '');
   }
 
   getAuthHeaders() {
@@ -181,6 +221,10 @@ export class JiraMCPServer {
             throw new Error(`Unknown tool: ${name}`);
         }
       } catch (error) {
+        console.error(`[ERROR] Tool ${name} failed:`, error.message);
+        if (this.debug && error.debugInfo) {
+          console.error(`[DEBUG] Additional info:`, error.debugInfo);
+        }
         return {
           content: [
             {
@@ -193,18 +237,135 @@ export class JiraMCPServer {
     });
   }
 
-  async makeJiraRequest(endpoint, options = {}) {
-    const url = `${this.jiraUrl}/rest/api/3${endpoint}`;
-    const response = await fetch(url, {
-      headers: this.getAuthHeaders(),
-      ...options,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Jira API error: ${response.status} ${response.statusText}`);
+  async makeJiraRequest(endpoint, options = {}, apiVersion = null) {
+    // Use specified API version or the instance's default
+    const version = apiVersion || this.apiVersion;
+    const url = `${this.baseUrl}/rest/api/${version}${endpoint}`;
+    
+    if (this.debug) {
+      console.error(`[DEBUG] Making request to: ${url}`);
+      console.error(`[DEBUG] Method: ${options.method || 'GET'}`);
     }
 
-    return await response.json();
+    try {
+      const response = await fetch(url, {
+        headers: this.getAuthHeaders(),
+        ...options,
+      });
+
+      // Log response details for debugging
+      if (this.debug) {
+        console.error(`[DEBUG] Response status: ${response.status} ${response.statusText}`);
+        console.error(`[DEBUG] Response headers:`, Object.fromEntries(response.headers.entries()));
+      }
+
+      // Handle specific error cases
+      if (response.status === 410) {
+        // 410 Gone - API version might not be supported
+        const responseText = await response.text();
+        
+        if (this.debug) {
+          console.error(`[DEBUG] 410 Response body:`, responseText);
+        }
+
+        // If we're using v3 and get a 410, try v2
+        if (version === 3 && !apiVersion) {
+          console.error(`[INFO] API v3 returned 410, falling back to v2 for endpoint: ${endpoint}`);
+          this.apiVersion = 2; // Update default for future requests
+          return await this.makeJiraRequest(endpoint, options, 2);
+        }
+        
+        throw new Error(`Jira API endpoint no longer available (410 Gone). The API version ${version} might not be supported by your Jira instance. Response: ${responseText.substring(0, 500)}`);
+      }
+
+      if (response.status === 401) {
+        const responseText = await response.text();
+        throw new Error(`Authentication failed. Please check your JIRA_EMAIL and JIRA_API_TOKEN. Response: ${responseText.substring(0, 200)}`);
+      }
+
+      if (response.status === 404) {
+        const responseText = await response.text();
+        
+        if (this.debug) {
+          console.error(`[DEBUG] 404 Response body:`, responseText);
+        }
+
+        // Try to parse error message
+        let errorMessage = `Resource not found (404)`;
+        try {
+          const errorData = JSON.parse(responseText);
+          if (errorData.errorMessages && errorData.errorMessages.length > 0) {
+            errorMessage = errorData.errorMessages.join(', ');
+          } else if (errorData.message) {
+            errorMessage = errorData.message;
+          }
+        } catch {
+          // If not JSON, include part of the response
+          errorMessage += `: ${responseText.substring(0, 200)}`;
+        }
+        
+        throw new Error(errorMessage);
+      }
+
+      if (!response.ok) {
+        const responseText = await response.text();
+        
+        if (this.debug) {
+          console.error(`[DEBUG] Error response body:`, responseText);
+        }
+
+        // Try to parse and extract meaningful error message
+        let errorMessage = `Jira API error: ${response.status} ${response.statusText}`;
+        try {
+          const errorData = JSON.parse(responseText);
+          if (errorData.errorMessages && errorData.errorMessages.length > 0) {
+            errorMessage = `Jira API error (${response.status}): ${errorData.errorMessages.join(', ')}`;
+          } else if (errorData.message) {
+            errorMessage = `Jira API error (${response.status}): ${errorData.message}`;
+          } else if (errorData.errors && Object.keys(errorData.errors).length > 0) {
+            const errorDetails = Object.entries(errorData.errors)
+              .map(([field, message]) => `${field}: ${message}`)
+              .join(', ');
+            errorMessage = `Jira API error (${response.status}): ${errorDetails}`;
+          }
+        } catch {
+          // If not JSON, include part of the response
+          errorMessage += `. Response: ${responseText.substring(0, 500)}`;
+        }
+        
+        const error = new Error(errorMessage);
+        error.debugInfo = {
+          url,
+          status: response.status,
+          statusText: response.statusText,
+          responseBody: responseText.substring(0, 1000)
+        };
+        throw error;
+      }
+
+      const responseData = await response.json();
+      
+      if (this.debug) {
+        console.error(`[DEBUG] Request successful`);
+      }
+
+      return responseData;
+    } catch (error) {
+      // Handle network errors
+      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+        throw new Error(`Cannot connect to Jira at ${this.baseUrl}. Please check the JIRA_URL configuration.`);
+      }
+      
+      // Re-throw the error with additional context if not already handled
+      if (!error.debugInfo) {
+        error.debugInfo = {
+          url,
+          endpoint,
+          apiVersion: version
+        };
+      }
+      throw error;
+    }
   }
 
   async getAssignedIssues(args = {}) {
@@ -229,7 +390,7 @@ export class JiraMCPServer {
       duedate: issue.fields.duedate,
       issueType: issue.fields.issuetype.name,
       project: issue.fields.project.name,
-      url: `${this.jiraUrl}/browse/${issue.key}`,
+      url: `${this.baseUrl}/browse/${issue.key}`,
     }));
 
     return {
@@ -257,7 +418,7 @@ export class JiraMCPServer {
       updated: issue.fields.updated,
       issueType: issue.fields.issuetype.name,
       project: issue.fields.project.name,
-      url: `${this.jiraUrl}/browse/${issue.key}`,
+      url: `${this.baseUrl}/browse/${issue.key}`,
     }));
 
     return {
@@ -294,7 +455,7 @@ export class JiraMCPServer {
       components: response.fields.components?.map(c => c.name) || [],
       labels: response.fields.labels || [],
       fixVersions: response.fields.fixVersions?.map(v => v.name) || [],
-      url: `${this.jiraUrl}/browse/${response.key}`,
+      url: `${this.baseUrl}/browse/${response.key}`,
       comments: response.fields.comment?.comments?.map(comment => ({
         author: comment.author.displayName,
         created: comment.created,
@@ -327,7 +488,7 @@ export class JiraMCPServer {
       assignee: issue.fields.assignee?.displayName || 'Unassigned',
       updated: issue.fields.updated,
       project: issue.fields.project.name,
-      url: `${this.jiraUrl}/browse/${issue.key}`,
+      url: `${this.baseUrl}/browse/${issue.key}`,
     }));
 
     return {
@@ -369,7 +530,7 @@ export class JiraMCPServer {
         project: issue.fields.project.name,
         issueType: issue.fields.issuetype.name,
         updated: issue.fields.updated,
-        url: `${this.jiraUrl}/browse/${issue.key}`,
+        url: `${this.baseUrl}/browse/${issue.key}`,
         taskPriority: this.calculateTaskPriority(issue),
       };
     });
@@ -411,7 +572,7 @@ export class JiraMCPServer {
       created: issue.fields.created,
       updated: issue.fields.updated,
       issueType: issue.fields.issuetype.name,
-      url: `${this.jiraUrl}/browse/${issue.key}`,
+      url: `${this.baseUrl}/browse/${issue.key}`,
     }));
 
     return {

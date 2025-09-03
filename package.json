@@ -4,10 +4,10 @@
   "description": "MCP Servers for Jira and Confluence integration",
   "type": "module",
   "scripts": {
-    "start:jira": "node src/jira-server.js",
-    "start:confluence": "node src/confluence-server.js",
-    "dev:jira": "node --inspect src/jira-server.js",
-    "dev:confluence": "node --inspect src/confluence-server.js",
+    "start:jira": "node src/jira_server.js",
+    "start:confluence": "node src/confluence_server.js",
+    "dev:jira": "node --inspect src/jira_server.js",
+    "dev:confluence": "node --inspect src/confluence_server.js",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
@@ -18,7 +18,10 @@
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
+    "@eslint/js": "^9.34.0",
     "@vitest/coverage-v8": "^3.2.4",
+    "eslint": "^9.34.0",
+    "globals": "^16.3.0",
     "vitest": "^3.2.4"
   },
   "engines": {
