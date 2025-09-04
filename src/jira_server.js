@@ -57,7 +57,8 @@ export class JiraMCPServer {
       if (match) {
         this.baseUrl = match[1];
         const apiPath = match[2];
-        this.apiVersion = apiPath.includes('/3') ? 3 : 2;
+        // Only support v3 now, v2 has been removed
+        this.apiVersion = 3;
       } else {
         // Fallback if pattern doesn't match
         this.baseUrl = url;
@@ -66,7 +67,7 @@ export class JiraMCPServer {
     } else {
       // URL is just the base domain
       this.baseUrl = url;
-      this.apiVersion = 3; // Default to v3, will fallback to v2 if needed
+      this.apiVersion = 3; // Use v3 as v2 has been removed
     }
     
     // Ensure baseUrl doesn't have trailing slash
@@ -237,10 +238,9 @@ export class JiraMCPServer {
     });
   }
 
-  async makeJiraRequest(endpoint, options = {}, apiVersion = null) {
-    // Use specified API version or the instance's default
-    const version = apiVersion || this.apiVersion;
-    const url = `${this.baseUrl}/rest/api/${version}${endpoint}`;
+  async makeJiraRequest(endpoint, options = {}) {
+    // Always use v3 as v2 has been removed
+    const url = `${this.baseUrl}/rest/api/3${endpoint}`;
     
     if (this.debug) {
       console.error(`[DEBUG] Making request to: ${url}`);
@@ -261,21 +261,19 @@ export class JiraMCPServer {
 
       // Handle specific error cases
       if (response.status === 410) {
-        // 410 Gone - API version might not be supported
+        // 410 Gone - API endpoint has been removed
         const responseText = await response.text();
         
         if (this.debug) {
           console.error(`[DEBUG] 410 Response body:`, responseText);
         }
-
-        // If we're using v3 and get a 410, try v2
-        if (version === 3 && !apiVersion) {
-          console.error(`[INFO] API v3 returned 410, falling back to v2 for endpoint: ${endpoint}`);
-          this.apiVersion = 2; // Update default for future requests
-          return await this.makeJiraRequest(endpoint, options, 2);
+        
+        // Check if the error message mentions migration to v3
+        if (responseText.includes('/rest/api/3/') || responseText.includes('api/3')) {
+          throw new Error(`Jira API v2 has been removed. This server is already configured to use v3. The specific endpoint ${endpoint} might not be available. Response: ${responseText.substring(0, 500)}`);
         }
         
-        throw new Error(`Jira API endpoint no longer available (410 Gone). The API version ${version} might not be supported by your Jira instance. Response: ${responseText.substring(0, 500)}`);
+        throw new Error(`Jira API endpoint no longer available (410 Gone). The endpoint ${endpoint} might have been removed or renamed. Response: ${responseText.substring(0, 500)}`);
       }
 
       if (response.status === 401) {
@@ -361,7 +359,7 @@ export class JiraMCPServer {
         error.debugInfo = {
           url,
           endpoint,
-          apiVersion: version
+          apiVersion: 3
         };
       }
       throw error;
@@ -378,18 +376,18 @@ export class JiraMCPServer {
 
     const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
 
-    const issues = response.issues.map(issue => ({
+    const issues = (response.issues || []).map(issue => ({
       key: issue.key,
-      summary: issue.fields.summary,
-      status: issue.fields.status.name,
-      priority: issue.fields.priority?.name || 'None',
-      assignee: issue.fields.assignee?.displayName || 'Unassigned',
-      reporter: issue.fields.reporter?.displayName || 'Unknown',
-      created: issue.fields.created,
-      updated: issue.fields.updated,
-      duedate: issue.fields.duedate,
-      issueType: issue.fields.issuetype.name,
-      project: issue.fields.project.name,
+      summary: issue.fields?.summary || 'No summary',
+      status: issue.fields?.status?.name || 'Unknown',
+      priority: issue.fields?.priority?.name || 'None',
+      assignee: issue.fields?.assignee?.displayName || 'Unassigned',
+      reporter: issue.fields?.reporter?.displayName || 'Unknown',
+      created: issue.fields?.created,
+      updated: issue.fields?.updated,
+      duedate: issue.fields?.duedate,
+      issueType: issue.fields?.issuetype?.name || 'Unknown',
+      project: issue.fields?.project?.name || 'Unknown',
       url: `${this.baseUrl}/browse/${issue.key}`,
     }));
 
@@ -408,16 +406,16 @@ export class JiraMCPServer {
 
     const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
 
-    const issues = response.issues.map(issue => ({
+    const issues = (response.issues || []).map(issue => ({
       key: issue.key,
-      summary: issue.fields.summary,
-      status: issue.fields.status.name,
-      priority: issue.fields.priority?.name || 'None',
-      assignee: issue.fields.assignee?.displayName || 'Unassigned',
-      created: issue.fields.created,
-      updated: issue.fields.updated,
-      issueType: issue.fields.issuetype.name,
-      project: issue.fields.project.name,
+      summary: issue.fields?.summary || 'No summary',
+      status: issue.fields?.status?.name || 'Unknown',
+      priority: issue.fields?.priority?.name || 'None',
+      assignee: issue.fields?.assignee?.displayName || 'Unassigned',
+      created: issue.fields?.created,
+      updated: issue.fields?.updated,
+      issueType: issue.fields?.issuetype?.name || 'Unknown',
+      project: issue.fields?.project?.name || 'Unknown',
       url: `${this.baseUrl}/browse/${issue.key}`,
     }));
 
@@ -436,10 +434,21 @@ export class JiraMCPServer {
 
     const response = await this.makeJiraRequest(`/issue/${issueKey}`);
 
+    // Helper function to extract text from ADF or return plain text
+    const extractText = (field) => {
+      if (!field) return null;
+      // If it's an ADF object (has type and content properties)
+      if (typeof field === 'object' && field.type === 'doc' && field.content) {
+        return this.extractTextFromADF(field);
+      }
+      // Otherwise return as is (plain text)
+      return field;
+    };
+
     const issue = {
       key: response.key,
       summary: response.fields.summary,
-      description: response.fields.description,
+      description: extractText(response.fields.description),
       status: response.fields.status.name,
       priority: response.fields.priority?.name || 'None',
       assignee: response.fields.assignee?.displayName || 'Unassigned',
@@ -459,7 +468,7 @@ export class JiraMCPServer {
       comments: response.fields.comment?.comments?.map(comment => ({
         author: comment.author.displayName,
         created: comment.created,
-        body: comment.body,
+        body: extractText(comment.body),
       })) || [],
     };
 
@@ -480,14 +489,14 @@ export class JiraMCPServer {
     
     const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
 
-    const issues = response.issues.map(issue => ({
+    const issues = (response.issues || []).map(issue => ({
       key: issue.key,
-      summary: issue.fields.summary,
-      status: issue.fields.status.name,
-      priority: issue.fields.priority?.name || 'None',
-      assignee: issue.fields.assignee?.displayName || 'Unassigned',
-      updated: issue.fields.updated,
-      project: issue.fields.project.name,
+      summary: issue.fields?.summary || 'No summary',
+      status: issue.fields?.status?.name || 'Unknown',
+      priority: issue.fields?.priority?.name || 'None',
+      assignee: issue.fields?.assignee?.displayName || 'Unassigned',
+      updated: issue.fields?.updated,
+      project: issue.fields?.project?.name || 'Unknown',
       url: `${this.baseUrl}/browse/${issue.key}`,
     }));
 
@@ -516,20 +525,44 @@ export class JiraMCPServer {
 
     const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
 
-    const tasks = response.issues.map(issue => {
-      const dueDate = issue.fields.duedate;
+    if (this.debug) {
+      console.error(`[DEBUG] getMyTasks response:`, JSON.stringify(response, null, 2).substring(0, 2000));
+    }
+
+    // Check if response has the expected structure
+    if (!response || typeof response !== 'object') {
+      throw new Error('Invalid response from Jira API');
+    }
+
+    const tasks = (response.issues || []).map(issue => {
+      // Ensure issue has the expected structure
+      if (!issue || !issue.key) {
+        console.error('[WARNING] Invalid issue structure:', issue);
+        return {
+          key: 'UNKNOWN',
+          summary: 'Invalid issue data',
+          status: 'Unknown',
+          priority: 'None',
+          project: 'Unknown',
+          issueType: 'Unknown',
+          url: this.baseUrl,
+          taskPriority: 0
+        };
+      }
+
+      const dueDate = issue.fields?.duedate;
       const isOverdue = dueDate && new Date(dueDate) < new Date();
       
       return {
         key: issue.key,
-        summary: issue.fields.summary,
-        status: issue.fields.status.name,
-        priority: issue.fields.priority?.name || 'None',
+        summary: issue.fields?.summary || 'No summary',
+        status: issue.fields?.status?.name || 'Unknown',
+        priority: issue.fields?.priority?.name || 'None',
         dueDate: dueDate,
         isOverdue: isOverdue,
-        project: issue.fields.project.name,
-        issueType: issue.fields.issuetype.name,
-        updated: issue.fields.updated,
+        project: issue.fields?.project?.name || 'Unknown',
+        issueType: issue.fields?.issuetype?.name || 'Unknown',
+        updated: issue.fields?.updated,
         url: `${this.baseUrl}/browse/${issue.key}`,
         taskPriority: this.calculateTaskPriority(issue),
       };
@@ -543,7 +576,7 @@ export class JiraMCPServer {
         {
           type: 'text',
           text: JSON.stringify({ 
-            total: response.total,
+            total: response.total || 0,
             overdueTasks: tasks.filter(t => t.isOverdue).length,
             tasks 
           }, null, 2),
@@ -563,15 +596,15 @@ export class JiraMCPServer {
 
     const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
 
-    const issues = response.issues.map(issue => ({
+    const issues = (response.issues || []).map(issue => ({
       key: issue.key,
-      summary: issue.fields.summary,
-      status: issue.fields.status.name,
-      priority: issue.fields.priority?.name || 'None',
-      assignee: issue.fields.assignee?.displayName || 'Unassigned',
-      created: issue.fields.created,
-      updated: issue.fields.updated,
-      issueType: issue.fields.issuetype.name,
+      summary: issue.fields?.summary || 'No summary',
+      status: issue.fields?.status?.name || 'Unknown',
+      priority: issue.fields?.priority?.name || 'None',
+      assignee: issue.fields?.assignee?.displayName || 'Unassigned',
+      created: issue.fields?.created,
+      updated: issue.fields?.updated,
+      issueType: issue.fields?.issuetype?.name || 'Unknown',
       url: `${this.baseUrl}/browse/${issue.key}`,
     }));
 
@@ -600,10 +633,10 @@ export class JiraMCPServer {
       'Low': 2,
       'Lowest': 1,
     };
-    priority += priorityMap[issue.fields.priority?.name] || 2;
+    priority += priorityMap[issue.fields?.priority?.name] || 2;
 
     // Due date weight
-    if (issue.fields.duedate) {
+    if (issue.fields?.duedate) {
       const dueDate = new Date(issue.fields.duedate);
       const today = new Date();
       const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
@@ -615,10 +648,43 @@ export class JiraMCPServer {
     }
 
     // Issue type weight
-    if (issue.fields.issuetype.name === 'Bug') priority += 2;
-    if (issue.fields.issuetype.name === 'Story') priority += 1;
+    if (issue.fields?.issuetype?.name === 'Bug') priority += 2;
+    if (issue.fields?.issuetype?.name === 'Story') priority += 1;
 
     return priority;
+  }
+
+  // Helper method to extract plain text from Atlassian Document Format (ADF)
+  extractTextFromADF(adfNode) {
+    if (!adfNode) return '';
+    
+    let text = '';
+    
+    // Process content array if it exists
+    if (adfNode.content && Array.isArray(adfNode.content)) {
+      for (const node of adfNode.content) {
+        text += this.extractTextFromADF(node);
+      }
+    }
+    
+    // Handle text nodes
+    if (adfNode.type === 'text' && adfNode.text) {
+      text += adfNode.text;
+    }
+    
+    // Add appropriate separators for block-level elements
+    if (['paragraph', 'heading', 'blockquote', 'listItem'].includes(adfNode.type)) {
+      if (text && !text.endsWith('\n')) {
+        text += '\n';
+      }
+    }
+    
+    // Handle hard breaks
+    if (adfNode.type === 'hardBreak') {
+      text += '\n';
+    }
+    
+    return text;
   }
 
   async run() {

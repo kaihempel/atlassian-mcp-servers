@@ -426,6 +426,77 @@ describe('JiraMCPServer', () => {
       expect(content.comments[1].body).toBe('Second comment');
     });
 
+    it('should handle ADF content in description and comments', async () => {
+      const issueWithADF = {
+        key: 'PROJ-ADF',
+        fields: {
+          summary: 'Issue with ADF content',
+          description: {
+            type: 'doc',
+            content: [
+              {
+                type: 'paragraph',
+                content: [
+                  {
+                    type: 'text',
+                    text: 'This is an ADF description.'
+                  }
+                ]
+              }
+            ]
+          },
+          status: { name: 'Open' },
+          priority: { name: 'High' },
+          assignee: { displayName: 'User' },
+          reporter: { displayName: 'Reporter' },
+          created: '2024-01-01T00:00:00Z',
+          updated: '2024-01-01T00:00:00Z',
+          duedate: null,
+          issuetype: { name: 'Task' },
+          project: { key: 'PROJ', name: 'Project' },
+          comment: {
+            comments: [
+              {
+                author: { displayName: 'Commenter' },
+                created: '2024-01-02T00:00:00Z',
+                body: {
+                  type: 'doc',
+                  content: [
+                    {
+                      type: 'paragraph',
+                      content: [
+                        {
+                          type: 'text',
+                          text: 'ADF comment text.'
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                author: { displayName: 'Another User' },
+                created: '2024-01-03T00:00:00Z',
+                body: 'Plain text comment'
+              }
+            ]
+          }
+        }
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue(issueWithADF)
+      });
+
+      const result = await server.getIssueDetails({ issueKey: 'PROJ-ADF' });
+      const content = JSON.parse(result.content[0].text);
+
+      expect(content.description).toBe('This is an ADF description.\n');
+      expect(content.comments[0].body).toBe('ADF comment text.\n');
+      expect(content.comments[1].body).toBe('Plain text comment');
+    });
+
     it('should handle missing optional fields', async () => {
       const minimalIssue = {
         key: 'PROJ-001',
@@ -821,6 +892,127 @@ describe('JiraMCPServer', () => {
     });
   });
 
+  describe('extractTextFromADF', () => {
+    it('should extract text from simple ADF document', () => {
+      const adfDoc = {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                text: 'This is a test paragraph.'
+              }
+            ]
+          }
+        ]
+      };
+
+      const result = server.extractTextFromADF(adfDoc);
+      expect(result).toBe('This is a test paragraph.\n');
+    });
+
+    it('should extract text from complex ADF with multiple paragraphs', () => {
+      const adfDoc = {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                text: 'First paragraph.'
+              }
+            ]
+          },
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                text: 'Second paragraph with '
+              },
+              {
+                type: 'text',
+                text: 'multiple text nodes.'
+              }
+            ]
+          }
+        ]
+      };
+
+      const result = server.extractTextFromADF(adfDoc);
+      expect(result).toBe('First paragraph.\nSecond paragraph with multiple text nodes.\n');
+    });
+
+    it('should handle ADF with headings and lists', () => {
+      const adfDoc = {
+        type: 'doc',
+        content: [
+          {
+            type: 'heading',
+            content: [
+              {
+                type: 'text',
+                text: 'Main Heading'
+              }
+            ]
+          },
+          {
+            type: 'listItem',
+            content: [
+              {
+                type: 'text',
+                text: 'List item 1'
+              }
+            ]
+          },
+          {
+            type: 'listItem',
+            content: [
+              {
+                type: 'text',
+                text: 'List item 2'
+              }
+            ]
+          }
+        ]
+      };
+
+      const result = server.extractTextFromADF(adfDoc);
+      expect(result).toBe('Main Heading\nList item 1\nList item 2\n');
+    });
+
+    it('should handle hard breaks', () => {
+      const adfDoc = {
+        type: 'paragraph',
+        content: [
+          {
+            type: 'text',
+            text: 'Line 1'
+          },
+          {
+            type: 'hardBreak'
+          },
+          {
+            type: 'text',
+            text: 'Line 2'
+          }
+        ]
+      };
+
+      const result = server.extractTextFromADF(adfDoc);
+      expect(result).toBe('Line 1\nLine 2\n');
+    });
+
+    it('should handle empty or null ADF', () => {
+      expect(server.extractTextFromADF(null)).toBe('');
+      expect(server.extractTextFromADF({})).toBe('');
+      expect(server.extractTextFromADF({ type: 'doc', content: [] })).toBe('');
+    });
+  });
+
   describe('calculateTaskPriority', () => {
     it('should calculate priority based on priority field', () => {
       const highPriorityIssue = {
@@ -1050,51 +1242,39 @@ describe('JiraMCPServer', () => {
         .rejects.toThrow('Jira API error: 500 Internal Server Error');
     });
 
-    it('should handle 410 Gone errors with v2 fallback', async () => {
-      // First call returns 410, second call (fallback to v2) succeeds
+    it('should handle 410 Gone errors without fallback', async () => {
+      // v3 returns 410 (endpoint removed)
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 410,
         statusText: 'Gone',
-        text: vi.fn().mockResolvedValue('This API version is no longer supported.')
-      }).mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ issues: [] })
+        text: vi.fn().mockResolvedValue('This API endpoint has been removed.')
       });
 
-      // It should fallback to v2 and succeed
-      const result = await server.makeJiraRequest('/search');
-      expect(result).toEqual({ issues: [] });
+      // It should throw error as there's no fallback
+      await expect(server.makeJiraRequest('/search'))
+        .rejects.toThrow('Jira API endpoint no longer available (410 Gone)');
       
-      // Verify it made two calls - first to v3, then to v2
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(mockFetch).toHaveBeenNthCalledWith(1, 
+      // Verify it only made one call to v3
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/rest/api/3/search'),
-        expect.any(Object)
-      );
-      expect(mockFetch).toHaveBeenNthCalledWith(2, 
-        expect.stringContaining('/rest/api/2/search'),
         expect.any(Object)
       );
     });
 
-    it('should handle 410 Gone errors when v2 also fails', async () => {
-      // Both v3 and v2 return 410
+    it('should handle 410 Gone errors with v3 migration message', async () => {
+      // v3 returns 410 with migration message
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 410,
         statusText: 'Gone',
-        text: vi.fn().mockResolvedValue('This API version is no longer supported.')
-      }).mockResolvedValueOnce({
-        ok: false,
-        status: 410,
-        statusText: 'Gone',
-        text: vi.fn().mockResolvedValue('This API version is no longer supported.')
+        text: vi.fn().mockResolvedValue('The requested API has been removed. Please migrate to /rest/api/3/search/jql')
       });
 
-      // It should throw error when both versions fail
+      // It should throw error with v3 migration message
       await expect(server.makeJiraRequest('/search'))
-        .rejects.toThrow('Jira API endpoint no longer available (410 Gone)');
+        .rejects.toThrow('Jira API v2 has been removed. This server is already configured to use v3');
     });
   });
 
