@@ -139,10 +139,10 @@ describe('JiraMCPServer', () => {
         json: vi.fn().mockResolvedValue(mockResponse)
       });
 
-      const result = await server.makeJiraRequest('/search');
+      const result = await server.makeJiraRequest('/search/jql');
       
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://test.atlassian.net/rest/api/3/search',
+        'https://test.atlassian.net/rest/api/3/search/jql',
         expect.objectContaining({
           headers: expect.objectContaining({
             'Authorization': expect.stringContaining('Basic')
@@ -160,7 +160,7 @@ describe('JiraMCPServer', () => {
         text: vi.fn().mockResolvedValue('Unauthorized: Invalid credentials')
       });
 
-      await expect(server.makeJiraRequest('/search'))
+      await expect(server.makeJiraRequest('/search/jql'))
         .rejects.toThrow('Authentication failed');
     });
   });
@@ -1252,13 +1252,13 @@ describe('JiraMCPServer', () => {
       });
 
       // It should throw error as there's no fallback
-      await expect(server.makeJiraRequest('/search'))
+      await expect(server.makeJiraRequest('/search/jql'))
         .rejects.toThrow('Jira API endpoint no longer available (410 Gone)');
       
       // Verify it only made one call to v3
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/rest/api/3/search'),
+        expect.stringContaining('/rest/api/3/search/jql'),
         expect.any(Object)
       );
     });
@@ -1273,7 +1273,7 @@ describe('JiraMCPServer', () => {
       });
 
       // It should throw error with v3 migration message
-      await expect(server.makeJiraRequest('/search'))
+      await expect(server.makeJiraRequest('/search/jql'))
         .rejects.toThrow('Jira API v2 has been removed. This server is already configured to use v3');
     });
   });

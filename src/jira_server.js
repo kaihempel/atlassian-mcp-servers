@@ -374,7 +374,7 @@ export class JiraMCPServer {
       jql = `assignee = currentUser() AND status = "${status}" ORDER BY priority DESC, updated DESC`;
     }
 
-    const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
 
     const issues = (response.issues || []).map(issue => ({
       key: issue.key,
@@ -395,7 +395,12 @@ export class JiraMCPServer {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({ total: response.total, issues }, null, 2),
+          text: JSON.stringify({ 
+            total: response.total || issues.length, 
+            isLast: response.isLast,
+            nextPageToken: response.nextPageToken,
+            issues 
+          }, null, 2),
         },
       ],
     };
@@ -404,7 +409,21 @@ export class JiraMCPServer {
   async searchIssues(args) {
     const { jql, maxResults = 50 } = args;
 
-    const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+
+    // Debug response structure if DEBUG is enabled
+    if (this.debug) {
+      console.error(`[DEBUG] searchIssues response type:`, typeof response);
+      console.error(`[DEBUG] Has issues array:`, Array.isArray(response?.issues));
+      console.error(`[DEBUG] Number of issues:`, response?.issues?.length || 0);
+      console.error(`[DEBUG] Response has total:`, 'total' in response);
+      console.error(`[DEBUG] Response isLast:`, response.isLast);
+      console.error(`[DEBUG] Response nextPageToken:`, response.nextPageToken ? 'present' : 'null');
+      if (response?.issues?.length > 0) {
+        console.error(`[DEBUG] First issue key:`, response.issues[0]?.key);
+        console.error(`[DEBUG] First issue fields:`, Object.keys(response.issues[0]?.fields || {}).slice(0, 5));
+      }
+    }
 
     const issues = (response.issues || []).map(issue => ({
       key: issue.key,
@@ -423,7 +442,13 @@ export class JiraMCPServer {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({ jql, total: response.total, issues }, null, 2),
+          text: JSON.stringify({ 
+            jql, 
+            total: response.total || issues.length, 
+            isLast: response.isLast,
+            nextPageToken: response.nextPageToken,
+            issues 
+          }, null, 2),
         },
       ],
     };
@@ -487,7 +512,7 @@ export class JiraMCPServer {
 
     const jql = `updated >= -${days}d ORDER BY updated DESC`;
     
-    const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
 
     const issues = (response.issues || []).map(issue => ({
       key: issue.key,
@@ -506,7 +531,9 @@ export class JiraMCPServer {
           type: 'text',
           text: JSON.stringify({ 
             period: `Last ${days} days`,
-            total: response.total, 
+            total: response.total || issues.length, 
+            isLast: response.isLast,
+            nextPageToken: response.nextPageToken,
             issues 
           }, null, 2),
         },
@@ -523,10 +550,19 @@ export class JiraMCPServer {
     }
     jql += ` ORDER BY priority DESC, duedate ASC, updated DESC`;
 
-    const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
 
+    // Debug response structure if DEBUG is enabled
     if (this.debug) {
-      console.error(`[DEBUG] getMyTasks response:`, JSON.stringify(response, null, 2).substring(0, 2000));
+      console.error(`[DEBUG] getMyTasks response type:`, typeof response);
+      console.error(`[DEBUG] Has issues array:`, Array.isArray(response?.issues));
+      console.error(`[DEBUG] Number of issues:`, response?.issues?.length || 0);
+      console.error(`[DEBUG] Response has total:`, 'total' in response);
+      console.error(`[DEBUG] Response isLast:`, response.isLast);
+      console.error(`[DEBUG] Response nextPageToken:`, response.nextPageToken ? 'present' : 'null');
+      if (response?.issues?.length > 0) {
+        console.error(`[DEBUG] First issue structure:`, JSON.stringify(response.issues[0], null, 2).substring(0, 500));
+      }
     }
 
     // Check if response has the expected structure
@@ -537,7 +573,9 @@ export class JiraMCPServer {
     const tasks = (response.issues || []).map(issue => {
       // Ensure issue has the expected structure
       if (!issue || !issue.key) {
-        console.error('[WARNING] Invalid issue structure:', issue);
+        if (this.debug) {
+          console.error('[WARNING] Invalid issue structure:', JSON.stringify(issue).substring(0, 200));
+        }
         return {
           key: 'UNKNOWN',
           summary: 'Invalid issue data',
@@ -576,7 +614,9 @@ export class JiraMCPServer {
         {
           type: 'text',
           text: JSON.stringify({ 
-            total: response.total || 0,
+            total: response.total || tasks.length,
+            isLast: response.isLast,
+            nextPageToken: response.nextPageToken,
             overdueTasks: tasks.filter(t => t.isOverdue).length,
             tasks 
           }, null, 2),
@@ -594,7 +634,7 @@ export class JiraMCPServer {
     }
     jql += ` ORDER BY priority DESC, updated DESC`;
 
-    const response = await this.makeJiraRequest(`/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
 
     const issues = (response.issues || []).map(issue => ({
       key: issue.key,
@@ -614,7 +654,9 @@ export class JiraMCPServer {
           type: 'text',
           text: JSON.stringify({ 
             project: projectKey,
-            total: response.total, 
+            total: response.total || issues.length, 
+            isLast: response.isLast,
+            nextPageToken: response.nextPageToken,
             issues 
           }, null, 2),
         },
