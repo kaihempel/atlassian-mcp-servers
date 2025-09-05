@@ -38,6 +38,7 @@ Both servers:
 - `JIRA_URL` - Your Jira instance URL (e.g., https://yourcompany.atlassian.net)
 - `JIRA_EMAIL` - Your Atlassian account email
 - `JIRA_API_TOKEN` - Jira API token for authentication
+- `LOG_LEVEL` - (Optional) Logging level: DEBUG, WARNING, or ERROR (default: DEBUG)
 
 #### Confluence Server  
 - `CONFLUENCE_URL` - Your Confluence instance URL (e.g., https://yourcompany.atlassian.net/wiki)
@@ -99,6 +100,13 @@ The project includes comprehensive test suites for both servers using Vitest:
   - Issue type (Bug, Story, Task)
 - **Smart Sorting**: Tasks are sorted by calculated priority for better productivity
 - **Comprehensive Issue Details**: Includes components, labels, fix versions, and comments
+- **Comprehensive Logging System**: 
+  - Structured JSON logging with timestamp, level, and metadata
+  - Three log levels: DEBUG, WARNING, ERROR (configurable via LOG_LEVEL env var)
+  - Automatic sensitive data masking (API tokens, passwords)
+  - Request/response logging with truncation for large payloads
+  - Daily log file rotation (logs/jira-server-YYYY-MM-DD.log)
+  - Non-blocking async writes for performance
 
 ### Confluence Server
 - **Task Extraction**: Automatically extracts tasks and action items from page content using pattern matching for:
