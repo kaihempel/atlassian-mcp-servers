@@ -412,7 +412,9 @@ export class JiraMCPServer {
       jql = `assignee = currentUser() AND status = "${status}" ORDER BY priority DESC, updated DESC`;
     }
 
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,assignee,issuetype,project,created,updated';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
     const issues = (response?.issues || []).filter(issue => issue && typeof issue === 'object').map(issue => ({
       key: issue.key || issue.id || 'UNKNOWN',
@@ -447,7 +449,9 @@ export class JiraMCPServer {
   async searchIssues(args) {
     const { jql, maxResults = 50 } = args;
 
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,assignee,issuetype,project,created,updated';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
     // Log response structure details
     await logger.debug('searchIssues response structure', {
@@ -548,7 +552,9 @@ export class JiraMCPServer {
 
     const jql = `updated >= -${days}d ORDER BY updated DESC`;
     
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,assignee,issuetype,project,created,updated';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
     const issues = (response?.issues || []).filter(issue => issue && typeof issue === 'object').map(issue => ({
       key: issue.key || issue.id || 'UNKNOWN',
@@ -586,7 +592,9 @@ export class JiraMCPServer {
     }
     jql += ` ORDER BY priority DESC, duedate ASC, updated DESC`;
 
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,duedate,project,issuetype,updated,assignee';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
     // Log response structure details
     await logger.debug('getMyTasks response structure', {
@@ -686,7 +694,9 @@ export class JiraMCPServer {
     }
     jql += ` ORDER BY priority DESC, updated DESC`;
 
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,assignee,issuetype,project,created,updated';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
     const issues = (response?.issues || []).filter(issue => issue && typeof issue === 'object').map(issue => ({
       key: issue.key || issue.id || 'UNKNOWN',
