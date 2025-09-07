@@ -52,8 +52,11 @@ export class Logger {
       fs.mkdirSync(this.logsDir, { recursive: true });
     }
 
-    // Generate log file name with timestamp
-    const timestamp = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    // Generate log file name with local date timestamp
+    const now = new Date();
+    const timestamp = now.getFullYear() + '-' + 
+      String(now.getMonth() + 1).padStart(2, '0') + '-' + 
+      String(now.getDate()).padStart(2, '0'); // YYYY-MM-DD format in local timezone
     const filename = `${this.serviceName}-${timestamp}.log`;
     return path.join(this.logsDir, filename);
   }

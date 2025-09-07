@@ -4,6 +4,264 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import fetch from 'node-fetch';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Get directory name for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// LogLevel enum
+const LogLevel = Object.freeze({
+  DEBUG: 'DEBUG',
+  WARNING: 'WARNING',
+  ERROR: 'ERROR'
+});
+
+// LogLevel priority for comparison
+const LOG_LEVEL_PRIORITY = {
+  [LogLevel.DEBUG]: 0,
+  [LogLevel.WARNING]: 1,
+  [LogLevel.ERROR]: 2
+};
+
+/**
+ * Logger class for writing structured logs to files
+ */
+class Logger {
+  constructor(serviceName = 'confluence-server') {
+    this.serviceName = serviceName;
+    this.logLevel = this.getLogLevelFromEnv();
+    this.logsDir = path.join(path.dirname(__dirname), 'logs');
+    this.logFilePath = this.initializeLogFile();
+    this.writeStream = null;
+    this.initializeWriteStream();
+  }
+
+  /**
+   * Get log level from environment variable
+   * @returns {string} The configured log level
+   */
+  getLogLevelFromEnv() {
+    const envLevel = process.env.LOG_LEVEL?.toUpperCase();
+    return Object.values(LogLevel).includes(envLevel) ? envLevel : LogLevel.DEBUG;
+  }
+
+  /**
+   * Initialize log file and directory
+   * @returns {string} Path to the log file
+   */
+  initializeLogFile() {
+    // Create logs directory if it doesn't exist
+    if (!fs.existsSync(this.logsDir)) {
+      fs.mkdirSync(this.logsDir, { recursive: true });
+    }
+
+    // Generate log file name with local date timestamp
+    const now = new Date();
+    const timestamp = now.getFullYear() + '-' + 
+      String(now.getMonth() + 1).padStart(2, '0') + '-' + 
+      String(now.getDate()).padStart(2, '0'); // YYYY-MM-DD format in local timezone
+    const filename = `${this.serviceName}-${timestamp}.log`;
+    return path.join(this.logsDir, filename);
+  }
+
+  /**
+   * Initialize write stream for efficient file writing
+   */
+  initializeWriteStream() {
+    this.writeStream = fs.createWriteStream(this.logFilePath, { flags: 'a' });
+    this.writeStream.on('error', (error) => {
+      console.error('Logger write stream error:', error);
+    });
+  }
+
+  /**
+   * Check if a log level should be logged based on current configuration
+   * @param {string} level - The log level to check
+   * @returns {boolean} Whether the level should be logged
+   */
+  shouldLog(level) {
+    return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[this.logLevel];
+  }
+
+  /**
+   * Mask sensitive data in log messages
+   * @param {any} data - Data to mask
+   * @returns {any} Masked data
+   */
+  maskSensitiveData(data) {
+    if (typeof data === 'string') {
+      // Mask API tokens and passwords
+      return data
+        .replace(/([Aa]pi[_-]?[Tt]oken["\s:=]+)([^\s",}]+)/g, '$1***MASKED***')
+        .replace(/([Pp]assword["\s:=]+)([^\s",}]+)/g, '$1***MASKED***')
+        .replace(/([Tt]oken["\s:=]+)([^\s",}]+)/g, '$1***MASKED***')
+        .replace(/([Aa]uthorization["\s:]+)(Basic|Bearer)\s+([^\s",}]+)/gi, '$1$2 ***MASKED***');
+    }
+    
+    if (typeof data === 'object' && data !== null) {
+      const masked = Array.isArray(data) ? [...data] : { ...data };
+      const sensitiveKeys = ['password', 'token', 'apitoken', 'api_token', 'authorization', 'secret'];
+      
+      for (const key in masked) {
+        if (sensitiveKeys.some(sensitive => key.toLowerCase().includes(sensitive))) {
+          masked[key] = '***MASKED***';
+        } else if (typeof masked[key] === 'object') {
+          masked[key] = this.maskSensitiveData(masked[key]);
+        } else if (typeof masked[key] === 'string') {
+          masked[key] = this.maskSensitiveData(masked[key]);
+        }
+      }
+      return masked;
+    }
+    
+    return data;
+  }
+
+  /**
+   * Truncate large data for logging
+   * @param {any} data - Data to truncate
+   * @param {number} maxLength - Maximum string length
+   * @returns {any} Truncated data
+   */
+  truncateData(data, maxLength = 1000) {
+    if (typeof data === 'string' && data.length > maxLength) {
+      return `${data.substring(0, maxLength)}... [truncated ${data.length - maxLength} characters]`;
+    }
+    
+    if (typeof data === 'object' && data !== null) {
+      const stringified = JSON.stringify(data);
+      if (stringified.length > maxLength) {
+        try {
+          // Try to preserve structure while truncating
+          const truncated = JSON.stringify(data, null, 2).substring(0, maxLength);
+          return `${truncated}... [truncated object]`;
+        } catch {
+          return `[Large object truncated - ${stringified.length} characters]`;
+        }
+      }
+    }
+    
+    return data;
+  }
+
+  /**
+   * Format log entry
+   * @param {string} level - Log level
+   * @param {string} message - Log message
+   * @param {object} metadata - Additional metadata
+   * @returns {string} Formatted log entry
+   */
+  formatLogEntry(level, message, metadata = {}) {
+    const timestamp = new Date().toISOString();
+    const maskedMetadata = this.maskSensitiveData(metadata);
+    const truncatedMetadata = this.truncateData(maskedMetadata);
+    
+    const logEntry = {
+      timestamp,
+      level,
+      service: this.serviceName,
+      message: this.maskSensitiveData(message),
+      ...(Object.keys(truncatedMetadata).length > 0 && { metadata: truncatedMetadata })
+    };
+
+    return JSON.stringify(logEntry) + '\n';
+  }
+
+  /**
+   * Write log entry to file
+   * @param {string} level - Log level
+   * @param {string} message - Log message
+   * @param {object} metadata - Additional metadata
+   */
+  async writeLog(level, message, metadata = {}) {
+    if (!this.shouldLog(level)) {
+      return;
+    }
+
+    const logEntry = this.formatLogEntry(level, message, metadata);
+    
+    return new Promise((resolve) => {
+      if (this.writeStream && !this.writeStream.destroyed) {
+        this.writeStream.write(logEntry, (error) => {
+          if (error) {
+            console.error('Failed to write log:', error);
+          }
+          resolve();
+        });
+      } else {
+        // Fallback to synchronous write if stream is not available
+        try {
+          fs.appendFileSync(this.logFilePath, logEntry);
+        } catch (error) {
+          console.error('Failed to write log synchronously:', error);
+        }
+        resolve();
+      }
+    });
+  }
+
+  /**
+   * Log debug message
+   * @param {string} message - Debug message
+   * @param {object} metadata - Additional metadata
+   */
+  async debug(message, metadata = {}) {
+    await this.writeLog(LogLevel.DEBUG, message, metadata);
+  }
+
+  /**
+   * Log warning message
+   * @param {string} message - Warning message
+   * @param {object} metadata - Additional metadata
+   */
+  async warning(message, metadata = {}) {
+    await this.writeLog(LogLevel.WARNING, message, metadata);
+  }
+
+  /**
+   * Log error message
+   * @param {string} message - Error message
+   * @param {object} metadata - Additional metadata
+   */
+  async error(message, metadata = {}) {
+    await this.writeLog(LogLevel.ERROR, message, metadata);
+    
+    // Also log to console.error for critical errors
+    if (process.env.NODE_ENV !== 'test') {
+      console.error(`[${this.serviceName}] ERROR: ${message}`);
+    }
+  }
+
+  /**
+   * Close the write stream
+   */
+  close() {
+    if (this.writeStream && !this.writeStream.destroyed) {
+      this.writeStream.end();
+    }
+  }
+}
+
+// Create singleton logger instance
+const logger = new Logger('confluence-server');
+
+// Handle process termination
+process.on('exit', () => {
+  logger.close();
+});
+
+process.on('SIGINT', () => {
+  logger.close();
+  process.exit();
+});
+
+process.on('SIGTERM', () => {
+  logger.close();
+  process.exit();
+});
 
 class ConfluenceMCPServer {
   // Constants for task extraction
@@ -30,14 +288,32 @@ class ConfluenceMCPServer {
     this.confluenceApiToken = process.env.CONFLUENCE_API_TOKEN;
 
     if (!this.confluenceUrl || !this.confluenceEmail || !this.confluenceApiToken) {
+      logger.error('Missing required environment variables: CONFLUENCE_URL, CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN');
       console.error('Missing required environment variables: CONFLUENCE_URL, CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN');
       process.exit(1);
     }
+    
+    // Normalize the Confluence URL
+    this.normalizeConfluenceUrl();
+    
+    // Log initialization
+    logger.debug('Initialized Confluence MCP Server', {
+      baseUrl: this.confluenceUrl,
+      email: this.confluenceEmail
+    })
     
     // Cache for API version availability
     this._v2ApiAvailable = null;
 
     this.setupToolHandlers();
+  }
+
+  normalizeConfluenceUrl() {
+    // Remove trailing slash if present
+    this.confluenceUrl = this.confluenceUrl.replace(/\/$/, '');
+    
+    // Remove /wiki suffix if present (will be added as needed)
+    this.confluenceUrl = this.confluenceUrl.replace(/\/wiki$/, '');
   }
 
   getAuthHeaders() {
@@ -265,6 +541,8 @@ class ConfluenceMCPServer {
       const {name, arguments: args} = request.params;
 
       try {
+        logger.debug(`Handling tool request: ${name}`, { arguments: args });
+        
         switch (name) {
           case 'search_pages':
             return await this.searchPages(args);
@@ -290,6 +568,11 @@ class ConfluenceMCPServer {
             throw new Error(`Unknown tool: ${name}`);
         }
       } catch (error) {
+        await logger.error(`Tool ${name} failed: ${error.message}`, {
+          tool: name,
+          arguments: args,
+          errorStack: error.stack
+        });
         return {
           content: [
             {
@@ -304,16 +587,111 @@ class ConfluenceMCPServer {
 
   async makeConfluenceRequest(endpoint, options = {}) {
     const url = `${this.confluenceUrl}/rest/api${endpoint}`;
-    const response = await fetch(url, {
-      headers: this.getAuthHeaders(),
-      ...options,
+    
+    // Parse query parameters from endpoint for logging
+    const endpointParts = endpoint.split('?');
+    const endpointPath = endpointParts[0];
+    const queryParams = endpointParts[1] ? Object.fromEntries(new URLSearchParams(endpointParts[1])) : {};
+    
+    // Log request details
+    await logger.debug('Making Confluence API request', {
+      baseUrl: this.confluenceUrl,
+      endpoint: endpointPath,
+      fullUrl: url,
+      method: options.method || 'GET',
+      queryParameters: queryParams
     });
 
-    if (!response.ok) {
-      throw new Error(`Confluence API error: ${response.status} ${response.statusText}`);
-    }
+    try {
+      const response = await fetch(url, {
+        headers: this.getAuthHeaders(),
+        ...options,
+      });
 
-    return await response.json();
+      // Log response details
+      await logger.debug('Confluence API response received', {
+        endpoint: endpointPath,
+        statusCode: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries())
+      });
+
+      if (response.status === 401) {
+        const responseText = await response.text();
+        await logger.error('Authentication failed', {
+          endpoint: endpointPath,
+          responseBody: responseText.substring(0, 200)
+        });
+        throw new Error(`Authentication failed. Please check your CONFLUENCE_EMAIL and CONFLUENCE_API_TOKEN. Response: ${responseText.substring(0, 200)}`);
+      }
+
+      if (response.status === 404) {
+        const responseText = await response.text();
+        await logger.warning('Confluence API resource not found (404)', {
+          endpoint: endpointPath,
+          responseBody: responseText.substring(0, 500)
+        });
+        throw new Error(`Resource not found (404): ${responseText.substring(0, 200)}`);
+      }
+
+      if (!response.ok) {
+        const responseText = await response.text();
+        await logger.error('Confluence API error response', {
+          endpoint: endpointPath,
+          statusCode: response.status,
+          statusText: response.statusText,
+          responseBody: responseText.substring(0, 1000)
+        });
+        
+        // Try to parse and extract meaningful error message
+        let errorMessage = `Confluence API error: ${response.status} ${response.statusText}`;
+        try {
+          const errorData = JSON.parse(responseText);
+          if (errorData.message) {
+            errorMessage = `Confluence API error (${response.status}): ${errorData.message}`;
+          }
+        } catch {
+          // If not JSON, include part of the response
+          errorMessage += `. Response: ${responseText.substring(0, 500)}`;
+        }
+        
+        throw new Error(errorMessage);
+      }
+
+      const responseData = await response.json();
+      
+      // Log successful response with truncated data
+      const responseDataStr = JSON.stringify(responseData);
+      const truncatedResponse = responseDataStr.length > 2000 
+        ? responseDataStr.substring(0, 2000) + '... [truncated]'
+        : responseDataStr;
+      
+      await logger.debug('Confluence API request successful', {
+        endpoint: endpointPath,
+        statusCode: response.status,
+        responseDataSize: responseDataStr.length,
+        responseData: truncatedResponse
+      });
+
+      return responseData;
+    } catch (error) {
+      // Log the error
+      await logger.error('Confluence API request failed', {
+        endpoint: endpointPath,
+        url,
+        errorCode: error.code,
+        errorMessage: error.message,
+        errorStack: error.stack
+      });
+      
+      // Handle network errors
+      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+        throw new Error(`Cannot connect to Confluence at ${this.confluenceUrl}. Please check the CONFLUENCE_URL configuration.`);
+      }
+      
+      // Re-throw the error
+      throw error;
+    }
   }
 
   async searchPages(args) {
@@ -323,6 +701,13 @@ class ConfluenceMCPServer {
     if (spaceKey) {
       cql = `space = "${spaceKey}" AND (${cql})`;
     }
+    
+    await logger.debug('Searching Confluence pages', {
+      query,
+      spaceKey,
+      limit,
+      cql
+    });
 
     const response = await this.makeConfluenceRequest(
         `/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=content.space,content.history.lastUpdated,content.version`
@@ -342,6 +727,12 @@ class ConfluenceMCPServer {
           excerpt: result.excerpt || '',
         }));
 
+    await logger.debug('Page search completed', {
+      query,
+      totalResults: response.totalSize,
+      returnedPages: pages.length
+    });
+
     return {
       content: [
         {
@@ -359,6 +750,8 @@ class ConfluenceMCPServer {
   async getPageContent(args) {
     const {pageId} = args;
 
+    await logger.debug('Fetching page content', { pageId });
+
     const response = await this.makeConfluenceRequest(
         `/content/${pageId}?expand=body.storage,space,history.lastUpdated,version,metadata.labels`
     );
@@ -375,6 +768,13 @@ class ConfluenceMCPServer {
       labels: response.metadata.labels.results.map(label => label.name),
       url: `${this.confluenceUrl}${response._links.webui}`,
     };
+
+    await logger.debug('Page content retrieved', {
+      pageId,
+      title: page.title,
+      contentLength: page.content.length,
+      labelCount: page.labels.length
+    });
 
     return {
       content: [
@@ -394,6 +794,12 @@ class ConfluenceMCPServer {
       cql = `space = "${spaceKey}" AND ${cql}`;
     }
     cql += ' ORDER BY lastmodified DESC';
+    
+    await logger.debug('Fetching recent pages', {
+      limit,
+      spaceKey,
+      cql
+    });
 
     const response = await this.makeConfluenceRequest(
         `/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=content.space,content.history.lastUpdated,content.version`
@@ -409,6 +815,11 @@ class ConfluenceMCPServer {
       version: result.content.version.number,
       url: `${this.confluenceUrl}${result.content._links.webui}`,
     }));
+
+    await logger.debug('Recent pages fetched', {
+      totalResults: response.totalSize,
+      returnedPages: pages.length
+    });
 
     return {
       content: [
@@ -426,9 +837,13 @@ class ConfluenceMCPServer {
   async getMyPages(args = {}) {
     const {limit = 25} = args;
 
+    await logger.debug('Fetching pages for current user', { limit });
+
     // Get current user info first
     const userResponse = await this.makeConfluenceRequest('/user/current');
     const currentUser = userResponse.username || userResponse.userKey;
+
+    await logger.debug('Current user identified', { currentUser });
 
     const cql = `creator = "${currentUser}" AND type = page ORDER BY lastmodified DESC`;
 
@@ -446,6 +861,12 @@ class ConfluenceMCPServer {
       version: result.content.version.number,
       url: `${this.confluenceUrl}${result.content._links.webui}`,
     }));
+
+    await logger.debug('User pages fetched', {
+      user: currentUser,
+      totalResults: response.totalSize,
+      returnedPages: pages.length
+    });
 
     return {
       content: [
@@ -469,12 +890,23 @@ class ConfluenceMCPServer {
       cql = `space = "${spaceKey}" AND ${cql}`;
     }
 
+    await logger.debug('Searching for pages with tasks', {
+      query,
+      limit,
+      spaceKey,
+      cql
+    });
+
     const response = await this.makeConfluenceRequest(
         `/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=content.space,content.history.lastUpdated`
     );
 
     const taskPages = [];
     const pageResults = response.results.filter(r => r.content.type === 'page');
+    
+    await logger.debug('Found pages to analyze for tasks', {
+      totalPages: pageResults.length
+    });
     
     // Process pages in parallel for better performance
     const pagePromises = pageResults.map(async (result) => {
@@ -487,6 +919,11 @@ class ConfluenceMCPServer {
         const extractedTasks = this.extractTasksFromContent(content);
         
         if (extractedTasks.length > 0) {
+          await logger.debug('Tasks found in page', {
+            pageId: result.content.id,
+            pageTitle: result.content.title,
+            tasksFound: extractedTasks.length
+          });
           return {
             id: result.content.id,
             title: result.content.title,
@@ -500,7 +937,11 @@ class ConfluenceMCPServer {
         }
         return null;
       } catch (error) {
-        console.warn(`Failed to process page ${result.content.id}: ${error.message}`);
+        await logger.warning(`Failed to process page ${result.content.id}: ${error.message}`, {
+          pageId: result.content.id,
+          pageTitle: result.content.title,
+          error: error.message
+        });
         return null;
       }
     });
@@ -514,6 +955,12 @@ class ConfluenceMCPServer {
 
     // Sort by priority
     taskPages.sort((a, b) => b.priority - a.priority);
+
+    await logger.debug('Task extraction completed', {
+      pagesSearched: response.results.length,
+      pagesWithTasks: taskPages.length,
+      totalTasksFound: taskPages.reduce((sum, page) => sum + page.taskCount, 0)
+    });
 
     return {
       content: [
@@ -533,6 +980,8 @@ class ConfluenceMCPServer {
   async getSpaces(args = {}) {
     const {limit = 25} = args;
 
+    await logger.debug('Fetching Confluence spaces', { limit });
+
     const response = await this.makeConfluenceRequest(`/space?limit=${limit}&expand=description,homepage`);
 
     const spaces = response.results.map(space => ({
@@ -542,6 +991,11 @@ class ConfluenceMCPServer {
       description: space.description?.plain?.value || '',
       homepageId: space.homepage?.id
     }));
+
+    await logger.debug('Spaces fetched', {
+      totalSpaces: response.totalSize,
+      returnedSpaces: spaces.length
+    });
 
     return {
       content: [
@@ -562,11 +1016,22 @@ class ConfluenceMCPServer {
     try {
       // Using v2 API for comments
       const url = `${this.confluenceUrl}/api/v2/pages/${pageId}/footer-comments`;
+      
+      await logger.debug('Attempting to fetch comments using v2 API', {
+        pageId,
+        url
+      });
+      
       const response = await fetch(url, {
         headers: this.getAuthHeaders(),
       });
 
       if (!response.ok) {
+        await logger.debug('v2 API failed, falling back to v1 API', {
+          pageId,
+          v2StatusCode: response.status
+        });
+        
         // Fallback to v1 API if v2 fails
         const v1Response = await this.makeConfluenceRequest(
           `/content/${pageId}/child/comment?expand=history,version,body.view`
@@ -642,6 +1107,14 @@ class ConfluenceMCPServer {
       // Check if we should use v2 API
       const useV2 = await this.checkV2ApiAvailability();
       
+      await logger.debug('Creating new page', {
+        spaceKey,
+        title,
+        hasParent: !!parentPageId,
+        contentLength: content.length,
+        useV2Api: useV2
+      });
+      
       if (useV2) {
         // Using v2 API
         const url = `${this.confluenceUrl}/api/v2/pages`;
@@ -672,6 +1145,12 @@ class ConfluenceMCPServer {
         }
 
         const createdPage = await response.json();
+        
+        await logger.debug('Page created successfully via v2 API', {
+          pageId: createdPage.id,
+          title: createdPage.title,
+          version: createdPage.version?.number
+        });
         
         return {
           content: [
@@ -711,6 +1190,12 @@ class ConfluenceMCPServer {
         const response = await this.makeConfluenceRequest('/content', {
           method: 'POST',
           body: JSON.stringify(requestBody)
+        });
+
+        await logger.debug('Page created successfully via v1 API', {
+          pageId: response.id,
+          title: response.title,
+          version: response.version.number
         });
 
         return {
@@ -758,6 +1243,14 @@ class ConfluenceMCPServer {
 
       // Check if we should use v2 API
       const useV2 = await this.checkV2ApiAvailability();
+      
+      await logger.debug('Updating page', {
+        pageId,
+        currentVersion: currentPage.version.number,
+        hasNewTitle: !!title,
+        contentLength: content.length,
+        useV2Api: useV2
+      });
 
       if (useV2) {
         // Using v2 API
@@ -789,6 +1282,12 @@ class ConfluenceMCPServer {
         }
 
         const updatedPage = await response.json();
+        
+        await logger.debug('Page updated successfully via v2 API', {
+          pageId: updatedPage.id,
+          title: updatedPage.title,
+          newVersion: updatedPage.version?.number
+        });
         
         return {
           content: [
@@ -831,6 +1330,12 @@ class ConfluenceMCPServer {
           body: JSON.stringify(requestBody)
         });
 
+        await logger.debug('Page updated successfully via v1 API', {
+          pageId: response.id,
+          title: response.title,
+          newVersion: response.version.number
+        });
+
         return {
           content: [
             {
@@ -862,6 +1367,13 @@ class ConfluenceMCPServer {
         month: 'long', 
         day: 'numeric' 
       })}`;
+
+      await logger.debug('Creating task page', {
+        spaceKey,
+        title: pageTitle,
+        taskCount: tasks.length,
+        hasParent: !!parentPageId
+      });
 
       // Build the task page content in Confluence storage format
       let content = '<h1>Task List</h1>';
@@ -1094,12 +1606,24 @@ class ConfluenceMCPServer {
     try {
       // Try a simple v2 API call to check availability
       const url = `${this.confluenceUrl}/api/v2/spaces?limit=1`;
+      
+      await logger.debug('Checking v2 API availability', { url });
+      
       const response = await fetch(url, {
         headers: this.getAuthHeaders(),
       });
       this._v2ApiAvailable = response.ok;
+      
+      await logger.debug('v2 API availability check result', {
+        available: this._v2ApiAvailable,
+        statusCode: response.status
+      });
+      
       return this._v2ApiAvailable;
-    } catch {
+    } catch (error) {
+      await logger.warning('v2 API availability check failed', {
+        error: error.message
+      });
       this._v2ApiAvailable = false;
       return false;
     }
@@ -1109,6 +1633,12 @@ class ConfluenceMCPServer {
     try {
       // Try v2 API first
       const url = `${this.confluenceUrl}/api/v2/spaces?keys=${spaceKey}`;
+      
+      await logger.debug('Getting space ID from key', {
+        spaceKey,
+        url
+      });
+      
       const response = await fetch(url, {
         headers: this.getAuthHeaders(),
       });
@@ -1116,14 +1646,33 @@ class ConfluenceMCPServer {
       if (response.ok) {
         const data = await response.json();
         if (data.results && data.results.length > 0) {
+          await logger.debug('Space ID retrieved via v2 API', {
+            spaceKey,
+            spaceId: data.results[0].id
+          });
           return data.results[0].id;
         }
       }
       
+      await logger.debug('Falling back to v1 API for space ID', {
+        spaceKey,
+        v2StatusCode: response.status
+      });
+      
       // Fallback to v1 API
       const v1Response = await this.makeConfluenceRequest(`/space/${spaceKey}`);
+      
+      await logger.debug('Space ID retrieved via v1 API', {
+        spaceKey,
+        spaceId: v1Response.id
+      });
+      
       return v1Response.id;
     } catch (error) {
+      await logger.error(`Failed to get space ID for key ${spaceKey}`, {
+        spaceKey,
+        error: error.message
+      });
       throw new Error(`Failed to get space ID for key ${spaceKey}: ${error.message}`);
     }
   }
@@ -1150,6 +1699,10 @@ class ConfluenceMCPServer {
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
+    await logger.debug('Confluence MCP server started', {
+      transport: 'stdio',
+      logLevel: process.env.LOG_LEVEL || 'DEBUG'
+    });
     console.error('Confluence MCP server running on stdio');
   }
 }
@@ -1160,5 +1713,12 @@ export { ConfluenceMCPServer };
 // Initialize and run the server only if this is the main module
 if (import.meta.url === `file://${process.argv[1]}`) {
   const server = new ConfluenceMCPServer();
-  server.run().catch(console.error);
+  server.run().catch(async (error) => {
+    await logger.error('Failed to start Confluence MCP server', {
+      errorMessage: error.message,
+      errorStack: error.stack
+    });
+    console.error(error);
+    process.exit(1);
+  });
 }
