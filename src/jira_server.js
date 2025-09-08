@@ -4,6 +4,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import fetch from 'node-fetch';
+import logger from './logger.js';
 
 export class JiraMCPServer {
   constructor() {
@@ -26,6 +27,7 @@ export class JiraMCPServer {
     this.jiraUsername = process.env.JIRA_USERNAME; // Your Atlassian account email
 
     if (!this.jiraUrl || !this.jiraEmail || !this.jiraApiToken) {
+      logger.error('Missing required environment variables: JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN');
       console.error('Missing required environment variables: JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN');
       process.exit(1);
     }
@@ -36,12 +38,12 @@ export class JiraMCPServer {
     // Enable debug logging if DEBUG environment variable is set
     this.debug = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
     
-    if (this.debug) {
-      console.error(`[DEBUG] Initialized Jira MCP Server`);
-      console.error(`[DEBUG] Base URL: ${this.baseUrl}`);
-      console.error(`[DEBUG] API Version: ${this.apiVersion}`);
-      console.error(`[DEBUG] Email: ${this.jiraEmail}`);
-    }
+    // Log initialization
+    logger.debug('Initialized Jira MCP Server', {
+      baseUrl: this.baseUrl,
+      apiVersion: this.apiVersion,
+      email: this.jiraEmail
+    });
 
     this.setupToolHandlers();
   }
@@ -222,10 +224,12 @@ export class JiraMCPServer {
             throw new Error(`Unknown tool: ${name}`);
         }
       } catch (error) {
-        console.error(`[ERROR] Tool ${name} failed:`, error.message);
-        if (this.debug && error.debugInfo) {
-          console.error(`[DEBUG] Additional info:`, error.debugInfo);
-        }
+        await logger.error(`Tool ${name} failed: ${error.message}`, {
+          tool: name,
+          arguments: args,
+          errorStack: error.stack,
+          debugInfo: error.debugInfo
+        });
         return {
           content: [
             {
@@ -242,10 +246,19 @@ export class JiraMCPServer {
     // Always use v3 as v2 has been removed
     const url = `${this.baseUrl}/rest/api/3${endpoint}`;
     
-    if (this.debug) {
-      console.error(`[DEBUG] Making request to: ${url}`);
-      console.error(`[DEBUG] Method: ${options.method || 'GET'}`);
-    }
+    // Parse query parameters from endpoint for logging
+    const endpointParts = endpoint.split('?');
+    const endpointPath = endpointParts[0];
+    const queryParams = endpointParts[1] ? Object.fromEntries(new URLSearchParams(endpointParts[1])) : {};
+    
+    // Log request details
+    await logger.debug('Making Jira API request', {
+      baseUrl: this.baseUrl,
+      endpoint: endpointPath,
+      fullUrl: url,
+      method: options.method || 'GET',
+      queryParameters: queryParams
+    });
 
     try {
       const response = await fetch(url, {
@@ -253,20 +266,23 @@ export class JiraMCPServer {
         ...options,
       });
 
-      // Log response details for debugging
-      if (this.debug) {
-        console.error(`[DEBUG] Response status: ${response.status} ${response.statusText}`);
-        console.error(`[DEBUG] Response headers:`, Object.fromEntries(response.headers.entries()));
-      }
+      // Log response details
+      await logger.debug('Jira API response received', {
+        endpoint: endpointPath,
+        statusCode: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries())
+      });
 
       // Handle specific error cases
       if (response.status === 410) {
         // 410 Gone - API endpoint has been removed
         const responseText = await response.text();
         
-        if (this.debug) {
-          console.error(`[DEBUG] 410 Response body:`, responseText);
-        }
+        await logger.error('Jira API endpoint removed (410 Gone)', {
+          endpoint: endpointPath,
+          responseBody: responseText.substring(0, 500)
+        });
         
         // Check if the error message mentions migration to v3
         if (responseText.includes('/rest/api/3/') || responseText.includes('api/3')) {
@@ -284,9 +300,10 @@ export class JiraMCPServer {
       if (response.status === 404) {
         const responseText = await response.text();
         
-        if (this.debug) {
-          console.error(`[DEBUG] 404 Response body:`, responseText);
-        }
+        await logger.warning('Jira API resource not found (404)', {
+          endpoint: endpointPath,
+          responseBody: responseText.substring(0, 500)
+        });
 
         // Try to parse error message
         let errorMessage = `Resource not found (404)`;
@@ -308,9 +325,12 @@ export class JiraMCPServer {
       if (!response.ok) {
         const responseText = await response.text();
         
-        if (this.debug) {
-          console.error(`[DEBUG] Error response body:`, responseText);
-        }
+        await logger.error('Jira API error response', {
+          endpoint: endpointPath,
+          statusCode: response.status,
+          statusText: response.statusText,
+          responseBody: responseText.substring(0, 1000)
+        });
 
         // Try to parse and extract meaningful error message
         let errorMessage = `Jira API error: ${response.status} ${response.statusText}`;
@@ -343,12 +363,30 @@ export class JiraMCPServer {
 
       const responseData = await response.json();
       
-      if (this.debug) {
-        console.error(`[DEBUG] Request successful`);
-      }
+      // Log successful response with truncated data
+      const responseDataStr = JSON.stringify(responseData);
+      const truncatedResponse = responseDataStr.length > 2000 
+        ? responseDataStr.substring(0, 2000) + '... [truncated]'
+        : responseDataStr;
+      
+      await logger.debug('Jira API request successful', {
+        endpoint: endpointPath,
+        statusCode: response.status,
+        responseDataSize: responseDataStr.length,
+        responseData: truncatedResponse
+      });
 
       return responseData;
     } catch (error) {
+      // Log the error
+      await logger.error('Jira API request failed', {
+        endpoint: endpointPath,
+        url,
+        errorCode: error.code,
+        errorMessage: error.message,
+        errorStack: error.stack
+      });
+      
       // Handle network errors
       if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
         throw new Error(`Cannot connect to Jira at ${this.baseUrl}. Please check the JIRA_URL configuration.`);
@@ -374,21 +412,23 @@ export class JiraMCPServer {
       jql = `assignee = currentUser() AND status = "${status}" ORDER BY priority DESC, updated DESC`;
     }
 
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,assignee,issuetype,project,created,updated';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
-    const issues = (response.issues || []).map(issue => ({
-      key: issue.key,
-      summary: issue.fields?.summary || 'No summary',
-      status: issue.fields?.status?.name || 'Unknown',
-      priority: issue.fields?.priority?.name || 'None',
-      assignee: issue.fields?.assignee?.displayName || 'Unassigned',
-      reporter: issue.fields?.reporter?.displayName || 'Unknown',
-      created: issue.fields?.created,
-      updated: issue.fields?.updated,
-      duedate: issue.fields?.duedate,
-      issueType: issue.fields?.issuetype?.name || 'Unknown',
-      project: issue.fields?.project?.name || 'Unknown',
-      url: `${this.baseUrl}/browse/${issue.key}`,
+    const issues = (response?.issues || []).filter(issue => issue && typeof issue === 'object').map(issue => ({
+      key: issue.key || issue.id || 'UNKNOWN',
+      summary: issue.fields?.summary || issue.summary || 'No summary',
+      status: issue.fields?.status?.name || issue.status || 'Unknown',
+      priority: issue.fields?.priority?.name || issue.priority || 'None',
+      assignee: issue.fields?.assignee?.displayName || issue.assignee || 'Unassigned',
+      reporter: issue.fields?.reporter?.displayName || issue.reporter || 'Unknown',
+      created: issue.fields?.created || issue.created,
+      updated: issue.fields?.updated || issue.updated,
+      duedate: issue.fields?.duedate || issue.duedate,
+      issueType: issue.fields?.issuetype?.name || issue.issueType || issue.type || 'Unknown',
+      project: issue.fields?.project?.name || issue.project || 'Unknown',
+      url: `${this.baseUrl}/browse/${issue.key || issue.id || 'UNKNOWN'}`,
     }));
 
     return {
@@ -409,33 +449,33 @@ export class JiraMCPServer {
   async searchIssues(args) {
     const { jql, maxResults = 50 } = args;
 
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,assignee,issuetype,project,created,updated';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
-    // Debug response structure if DEBUG is enabled
-    if (this.debug) {
-      console.error(`[DEBUG] searchIssues response type:`, typeof response);
-      console.error(`[DEBUG] Has issues array:`, Array.isArray(response?.issues));
-      console.error(`[DEBUG] Number of issues:`, response?.issues?.length || 0);
-      console.error(`[DEBUG] Response has total:`, 'total' in response);
-      console.error(`[DEBUG] Response isLast:`, response.isLast);
-      console.error(`[DEBUG] Response nextPageToken:`, response.nextPageToken ? 'present' : 'null');
-      if (response?.issues?.length > 0) {
-        console.error(`[DEBUG] First issue key:`, response.issues[0]?.key);
-        console.error(`[DEBUG] First issue fields:`, Object.keys(response.issues[0]?.fields || {}).slice(0, 5));
-      }
-    }
+    // Log response structure details
+    await logger.debug('searchIssues response structure', {
+      responseType: typeof response,
+      hasIssuesArray: Array.isArray(response?.issues),
+      numberOfIssues: response?.issues?.length || 0,
+      hasTotal: 'total' in response,
+      isLast: response.isLast,
+      hasNextPageToken: response.nextPageToken ? true : false,
+      firstIssueKey: response?.issues?.[0]?.key,
+      firstIssueFields: response?.issues?.[0]?.fields ? Object.keys(response.issues[0].fields).slice(0, 5) : []
+    });
 
-    const issues = (response.issues || []).map(issue => ({
-      key: issue.key,
-      summary: issue.fields?.summary || 'No summary',
-      status: issue.fields?.status?.name || 'Unknown',
-      priority: issue.fields?.priority?.name || 'None',
-      assignee: issue.fields?.assignee?.displayName || 'Unassigned',
-      created: issue.fields?.created,
-      updated: issue.fields?.updated,
-      issueType: issue.fields?.issuetype?.name || 'Unknown',
-      project: issue.fields?.project?.name || 'Unknown',
-      url: `${this.baseUrl}/browse/${issue.key}`,
+    const issues = (response?.issues || []).filter(issue => issue && typeof issue === 'object').map(issue => ({
+      key: issue.key || issue.id || 'UNKNOWN',
+      summary: issue.fields?.summary || issue.summary || 'No summary',
+      status: issue.fields?.status?.name || issue.status || 'Unknown',
+      priority: issue.fields?.priority?.name || issue.priority || 'None',
+      assignee: issue.fields?.assignee?.displayName || issue.assignee || 'Unassigned',
+      created: issue.fields?.created || issue.created,
+      updated: issue.fields?.updated || issue.updated,
+      issueType: issue.fields?.issuetype?.name || issue.issueType || issue.type || 'Unknown',
+      project: issue.fields?.project?.name || issue.project || 'Unknown',
+      url: `${this.baseUrl}/browse/${issue.key || issue.id || 'UNKNOWN'}`,
     }));
 
     return {
@@ -512,17 +552,19 @@ export class JiraMCPServer {
 
     const jql = `updated >= -${days}d ORDER BY updated DESC`;
     
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,assignee,issuetype,project,created,updated';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
-    const issues = (response.issues || []).map(issue => ({
-      key: issue.key,
-      summary: issue.fields?.summary || 'No summary',
-      status: issue.fields?.status?.name || 'Unknown',
-      priority: issue.fields?.priority?.name || 'None',
-      assignee: issue.fields?.assignee?.displayName || 'Unassigned',
-      updated: issue.fields?.updated,
-      project: issue.fields?.project?.name || 'Unknown',
-      url: `${this.baseUrl}/browse/${issue.key}`,
+    const issues = (response?.issues || []).filter(issue => issue && typeof issue === 'object').map(issue => ({
+      key: issue.key || issue.id || 'UNKNOWN',
+      summary: issue.fields?.summary || issue.summary || 'No summary',
+      status: issue.fields?.status?.name || issue.status || 'Unknown',
+      priority: issue.fields?.priority?.name || issue.priority || 'None',
+      assignee: issue.fields?.assignee?.displayName || issue.assignee || 'Unassigned',
+      updated: issue.fields?.updated || issue.updated,
+      project: issue.fields?.project?.name || issue.project || 'Unknown',
+      url: `${this.baseUrl}/browse/${issue.key || issue.id || 'UNKNOWN'}`,
     }));
 
     return {
@@ -550,61 +592,79 @@ export class JiraMCPServer {
     }
     jql += ` ORDER BY priority DESC, duedate ASC, updated DESC`;
 
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,duedate,project,issuetype,updated,assignee';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
-    // Debug response structure if DEBUG is enabled
-    if (this.debug) {
-      console.error(`[DEBUG] getMyTasks response type:`, typeof response);
-      console.error(`[DEBUG] Has issues array:`, Array.isArray(response?.issues));
-      console.error(`[DEBUG] Number of issues:`, response?.issues?.length || 0);
-      console.error(`[DEBUG] Response has total:`, 'total' in response);
-      console.error(`[DEBUG] Response isLast:`, response.isLast);
-      console.error(`[DEBUG] Response nextPageToken:`, response.nextPageToken ? 'present' : 'null');
-      if (response?.issues?.length > 0) {
-        console.error(`[DEBUG] First issue structure:`, JSON.stringify(response.issues[0], null, 2).substring(0, 500));
-      }
-    }
+    // Log response structure details
+    await logger.debug('getMyTasks response structure', {
+      responseType: typeof response,
+      hasIssuesArray: Array.isArray(response?.issues),
+      numberOfIssues: response?.issues?.length || 0,
+      hasTotal: 'total' in response,
+      isLast: response.isLast,
+      hasNextPageToken: response.nextPageToken ? true : false,
+      firstIssueStructure: response?.issues?.[0] ? JSON.stringify(response.issues[0], null, 2).substring(0, 500) : null,
+      responseKeys: response ? Object.keys(response) : []
+    });
 
     // Check if response has the expected structure
     if (!response || typeof response !== 'object') {
       throw new Error('Invalid response from Jira API');
     }
 
-    const tasks = (response.issues || []).map(issue => {
-      // Ensure issue has the expected structure
-      if (!issue || !issue.key) {
-        if (this.debug) {
-          console.error('[WARNING] Invalid issue structure:', JSON.stringify(issue).substring(0, 200));
-        }
-        return {
-          key: 'UNKNOWN',
-          summary: 'Invalid issue data',
-          status: 'Unknown',
-          priority: 'None',
-          project: 'Unknown',
-          issueType: 'Unknown',
-          url: this.baseUrl,
-          taskPriority: 0
-        };
+    // Handle case where the API returns data in a different structure
+    let issuesArray = response.issues || response.values || [];
+    
+    // If the response itself is an array, use it directly
+    if (Array.isArray(response)) {
+      issuesArray = response;
+    }
+
+    // Log if we found issues
+    await logger.debug('Issues array details', {
+      issuesFound: issuesArray.length,
+      firstIssue: issuesArray[0] ? JSON.stringify(issuesArray[0]).substring(0, 500) : null
+    });
+
+    const tasks = issuesArray.map(issue => {
+      // More detailed logging for debugging
+      if (!issue || typeof issue !== 'object') {
+        logger.warning('Invalid issue structure in getMyTasks', {
+          issueType: typeof issue,
+          issueData: JSON.stringify(issue).substring(0, 200)
+        });
+        return null;
       }
 
-      const dueDate = issue.fields?.duedate;
+      // Check for key in different possible locations
+      const issueKey = issue.key || issue.id || issue.issueKey;
+      
+      if (!issueKey) {
+        logger.warning('Issue missing key field', {
+          availableFields: Object.keys(issue).slice(0, 10),
+          issueData: JSON.stringify(issue).substring(0, 200)
+        });
+        return null;
+      }
+
+      const dueDate = issue.fields?.duedate || issue.duedate;
       const isOverdue = dueDate && new Date(dueDate) < new Date();
       
       return {
-        key: issue.key,
-        summary: issue.fields?.summary || 'No summary',
-        status: issue.fields?.status?.name || 'Unknown',
-        priority: issue.fields?.priority?.name || 'None',
+        key: issueKey,
+        summary: issue.fields?.summary || issue.summary || 'No summary',
+        status: issue.fields?.status?.name || issue.status?.name || issue.status || 'Unknown',
+        priority: issue.fields?.priority?.name || issue.priority?.name || issue.priority || 'None',
         dueDate: dueDate,
         isOverdue: isOverdue,
-        project: issue.fields?.project?.name || 'Unknown',
-        issueType: issue.fields?.issuetype?.name || 'Unknown',
-        updated: issue.fields?.updated,
-        url: `${this.baseUrl}/browse/${issue.key}`,
+        project: issue.fields?.project?.name || issue.project?.name || issue.project || 'Unknown',
+        issueType: issue.fields?.issuetype?.name || issue.issuetype?.name || issue.issueType || issue.type || 'Unknown',
+        updated: issue.fields?.updated || issue.updated,
+        url: `${this.baseUrl}/browse/${issueKey}`,
         taskPriority: this.calculateTaskPriority(issue),
       };
-    });
+    }).filter(task => task !== null); // Remove null entries
 
     // Sort by calculated task priority
     tasks.sort((a, b) => b.taskPriority - a.taskPriority);
@@ -614,9 +674,9 @@ export class JiraMCPServer {
         {
           type: 'text',
           text: JSON.stringify({ 
-            total: response.total || tasks.length,
-            isLast: response.isLast,
-            nextPageToken: response.nextPageToken,
+            total: response.total || response.totalCount || tasks.length,
+            isLast: response.isLast !== undefined ? response.isLast : true,
+            nextPageToken: response.nextPageToken || response.startAt,
             overdueTasks: tasks.filter(t => t.isOverdue).length,
             tasks 
           }, null, 2),
@@ -634,18 +694,20 @@ export class JiraMCPServer {
     }
     jql += ` ORDER BY priority DESC, updated DESC`;
 
-    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`);
+    // Include fields parameter to get full issue details
+    const fields = 'key,summary,status,priority,assignee,issuetype,project,created,updated';
+    const response = await this.makeJiraRequest(`/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fields}`);
 
-    const issues = (response.issues || []).map(issue => ({
-      key: issue.key,
-      summary: issue.fields?.summary || 'No summary',
-      status: issue.fields?.status?.name || 'Unknown',
-      priority: issue.fields?.priority?.name || 'None',
-      assignee: issue.fields?.assignee?.displayName || 'Unassigned',
-      created: issue.fields?.created,
-      updated: issue.fields?.updated,
-      issueType: issue.fields?.issuetype?.name || 'Unknown',
-      url: `${this.baseUrl}/browse/${issue.key}`,
+    const issues = (response?.issues || []).filter(issue => issue && typeof issue === 'object').map(issue => ({
+      key: issue.key || issue.id || 'UNKNOWN',
+      summary: issue.fields?.summary || issue.summary || 'No summary',
+      status: issue.fields?.status?.name || issue.status || 'Unknown',
+      priority: issue.fields?.priority?.name || issue.priority || 'None',
+      assignee: issue.fields?.assignee?.displayName || issue.assignee || 'Unassigned',
+      created: issue.fields?.created || issue.created,
+      updated: issue.fields?.updated || issue.updated,
+      issueType: issue.fields?.issuetype?.name || issue.issueType || issue.type || 'Unknown',
+      url: `${this.baseUrl}/browse/${issue.key || issue.id || 'UNKNOWN'}`,
     }));
 
     return {
@@ -732,10 +794,21 @@ export class JiraMCPServer {
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
+    await logger.debug('Jira MCP server started', {
+      transport: 'stdio',
+      logLevel: process.env.LOG_LEVEL || 'DEBUG'
+    });
     console.error('Jira MCP server running on stdio');
   }
 }
 
 // Start the server
 const server = new JiraMCPServer();
-server.run().catch(console.error);
+server.run().catch(async (error) => {
+  await logger.error('Failed to start Jira MCP server', {
+    errorMessage: error.message,
+    errorStack: error.stack
+  });
+  console.error(error);
+  process.exit(1);
+});
