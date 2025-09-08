@@ -714,18 +714,29 @@ class ConfluenceMCPServer {
     );
 
     const pages = response.results
-        .filter(result => result.content.type === 'page')
-        .map(result => ({
-          id: result.content.id,
-          title: result.content.title,
-          space: result.content.space.name,
-          spaceKey: result.content.space.key,
-          lastUpdated: result.content.history.lastUpdated.when,
-          lastUpdatedBy: result.content.history.lastUpdated.by.displayName,
-          version: result.content.version.number,
-          url: `${this.confluenceUrl}${result.content._links.webui}`,
-          excerpt: result.excerpt || '',
-        }));
+        .filter(result => result.content && result.content.type === 'page')
+        .map(result => {
+          // Add safety checks for nested properties
+          const content = result.content;
+          const space = content.space || {};
+          const history = content.history || {};
+          const lastUpdated = history.lastUpdated || {};
+          const by = lastUpdated.by || {};
+          const version = content.version || {};
+          const links = content._links || {};
+          
+          return {
+            id: content.id,
+            title: content.title,
+            space: space.name || 'Unknown',
+            spaceKey: space.key || 'Unknown',
+            lastUpdated: lastUpdated.when || '',
+            lastUpdatedBy: by.displayName || 'Unknown',
+            version: version.number || 1,
+            url: links.webui ? `${this.confluenceUrl}${links.webui}` : '',
+            excerpt: result.excerpt || '',
+          };
+        });
 
     await logger.debug('Page search completed', {
       query,
