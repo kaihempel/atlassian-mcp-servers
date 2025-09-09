@@ -2,7 +2,24 @@
   "name": "atlassian-mcp-servers",
   "version": "1.0.0",
   "description": "MCP Servers for Jira and Confluence integration",
-  "type": "module",
+  "keywords": [
+    "MCP",
+    "Atlassian",
+    "Jira",
+    "Confluence"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git@github:kaihempel/atlassian-mcp-servers.git"
+  },
+  "license": "MIT",
+  "author": "Kai Hempel",
+  "type": "MCP Servers",
+  "main": "src/jira_server.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
   "scripts": {
     "start:jira": "node src/jira_server.js",
     "start:confluence": "node src/confluence_server.js",
