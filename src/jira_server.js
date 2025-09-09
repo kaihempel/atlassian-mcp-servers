@@ -200,6 +200,54 @@ export class JiraMCPServer {
             required: ['projectKey'],
           },
         },
+        {
+          name: 'create_issue',
+          description: 'Create a new Jira issue',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectKey: {
+                type: 'string',
+                description: 'Jira project key (e.g., "TEST")',
+              },
+              issueType: {
+                type: 'string',
+                description: 'Issue type name (e.g., "Task", "Bug", "Story")',
+              },
+              summary: {
+                type: 'string',
+                description: 'Brief description of the issue (required)',
+              },
+              description: {
+                type: 'string',
+                description: 'Detailed description of the issue (optional)',
+              },
+              priority: {
+                type: 'string',
+                description: 'Issue priority (e.g., "Highest", "High", "Medium", "Low", "Lowest")',
+              },
+              assignee: {
+                type: 'string',
+                description: 'Email or username of the assignee (optional)',
+              },
+              labels: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+                description: 'Array of labels to add to the issue',
+              },
+              components: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+                description: 'Array of component names to add to the issue',
+              },
+            },
+            required: ['projectKey', 'issueType', 'summary'],
+          },
+        },
       ],
     }));
 
@@ -220,6 +268,8 @@ export class JiraMCPServer {
             return await this.getMyTasks(args);
           case 'get_project_issues':
             return await this.getProjectIssues(args);
+          case 'create_issue':
+            return await this.createIssue(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -724,6 +774,176 @@ export class JiraMCPServer {
         },
       ],
     };
+  }
+
+  async createIssue(args) {
+    const { projectKey, issueType, summary, description, priority, assignee, labels, components } = args;
+
+    // Input validation
+    if (!projectKey || typeof projectKey !== 'string') {
+      throw new Error('projectKey is required and must be a string');
+    }
+    if (!issueType || typeof issueType !== 'string') {
+      throw new Error('issueType is required and must be a string');
+    }
+    if (!summary || typeof summary !== 'string') {
+      throw new Error('summary is required and must be a string');
+    }
+
+    // Log the create issue request (mask sensitive data) - after validation
+    await logger.debug('Creating Jira issue', {
+      projectKey,
+      issueType,
+      summary: summary.substring(0, 100),
+      hasDescription: !!description,
+      priority,
+      assignee: assignee ? 'MASKED' : undefined,
+      labelsCount: labels ? labels.length : 0,
+      componentsCount: components ? components.length : 0
+    });
+
+    // Build the request payload
+    const fields = {
+      project: {
+        key: projectKey
+      },
+      issuetype: {
+        name: issueType
+      },
+      summary: summary
+    };
+
+    // Add optional description in ADF format if provided
+    if (description && typeof description === 'string') {
+      fields.description = {
+        type: 'doc',
+        version: 1,
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                text: description
+              }
+            ]
+          }
+        ]
+      };
+    }
+
+    // Add optional priority if provided
+    if (priority && typeof priority === 'string') {
+      fields.priority = {
+        name: priority
+      };
+    }
+
+    // Add optional assignee if provided
+    if (assignee && typeof assignee === 'string') {
+      if (assignee.includes('@')) {
+        // Use email address format
+        fields.assignee = { emailAddress: assignee };
+      } else {
+        // Assume it's an account ID
+        fields.assignee = { accountId: assignee };
+      }
+    }
+
+    // Add optional labels if provided
+    if (labels && Array.isArray(labels)) {
+      // Validate labels are strings
+      const validLabels = labels.filter(label => typeof label === 'string' && label.trim());
+      if (validLabels.length > 0) {
+        fields.labels = validLabels;
+      }
+    }
+
+    // Add optional components if provided
+    if (components && Array.isArray(components)) {
+      // Validate components are strings
+      const validComponents = components.filter(component => typeof component === 'string' && component.trim());
+      if (validComponents.length > 0) {
+        fields.components = validComponents.map(name => ({ name }));
+      }
+    }
+
+    const requestBody = { fields };
+
+    try {
+      await logger.debug('Sending create issue request', {
+        endpoint: '/issue',
+        method: 'POST',
+        projectKey,
+        issueType,
+        fieldsIncluded: Object.keys(fields)
+      });
+
+      const response = await this.makeJiraRequest('/issue', {
+        method: 'POST',
+        body: JSON.stringify(requestBody)
+      });
+
+      // Log successful creation
+      await logger.debug('Issue created successfully', {
+        issueKey: response.key,
+        issueId: response.id,
+        url: `${this.baseUrl}/browse/${response.key}`
+      });
+
+      // Build the response with created issue details
+      const createdIssue = {
+        key: response.key,
+        id: response.id,
+        url: `${this.baseUrl}/browse/${response.key}`,
+        project: projectKey,
+        issueType: issueType,
+        summary: summary,
+        status: 'Created',
+        self: response.self
+      };
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: true,
+              message: `Issue ${response.key} created successfully`,
+              issue: createdIssue
+            }, null, 2),
+          },
+        ],
+      };
+
+    } catch (error) {
+      // Enhanced error handling for common create issue failures
+      let errorMessage = error.message;
+
+      // Check for specific Jira creation errors
+      if (error.message.includes('project is required') || error.message.includes('Project not found')) {
+        errorMessage = `Project '${projectKey}' not found or you don't have permission to create issues in it. Please check the project key and your permissions.`;
+      } else if (error.message.includes('Issue type not found') || error.message.includes('issuetype')) {
+        errorMessage = `Issue type '${issueType}' not found in project '${projectKey}'. Common issue types are: Task, Bug, Story, Epic.`;
+      } else if (error.message.includes('assignee') && assignee) {
+        errorMessage = `Assignee '${assignee}' not found. Please use a valid email address or account ID.`;
+      } else if (error.message.includes('priority') && priority) {
+        errorMessage = `Priority '${priority}' not valid. Valid priorities are typically: Highest, High, Medium, Low, Lowest.`;
+      } else if (error.message.includes('component') && components) {
+        errorMessage = `One or more components not found in project '${projectKey}'. Please verify component names.`;
+      }
+
+      await logger.error('Failed to create issue', {
+        projectKey,
+        issueType,
+        summary: summary ? summary.substring(0, 100) : 'N/A',
+        errorMessage: error.message,
+        errorStack: error.stack,
+        requestBody: JSON.stringify(requestBody, null, 2)
+      });
+
+      throw new Error(errorMessage);
+    }
   }
 
   calculateTaskPriority(issue) {

@@ -35,6 +35,37 @@ async function createTestServer(env = {}) {
   return server;
 }
 
+// Helper to create mock fetch responses with proper headers
+function createMockResponse(data, options = {}) {
+  return {
+    ok: options.ok !== undefined ? options.ok : true,
+    status: options.status || 200,
+    statusText: options.statusText || 'OK',
+    headers: {
+      entries: () => options.headers || [['content-type', 'application/json']]
+    },
+    json: vi.fn().mockResolvedValue(data),
+    text: vi.fn().mockResolvedValue(
+      options.text || JSON.stringify(data)
+    )
+  };
+}
+
+// Helper to create mock error response
+function createMockErrorResponse(status, statusText, errorBody) {
+  return {
+    ok: false,
+    status,
+    statusText,
+    headers: {
+      entries: () => [['content-type', 'application/json']]
+    },
+    text: vi.fn().mockResolvedValue(
+      typeof errorBody === 'string' ? errorBody : JSON.stringify(errorBody)
+    )
+  };
+}
+
 describe('JiraMCPServer', () => {
   let server;
   let mockFetch;
@@ -134,10 +165,7 @@ describe('JiraMCPServer', () => {
   describe('makeJiraRequest', () => {
     it('should make request with correct URL and headers', async () => {
       const mockResponse = { issues: [] };
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockResponse));
 
       const result = await server.makeJiraRequest('/search/jql');
       
@@ -153,12 +181,9 @@ describe('JiraMCPServer', () => {
     });
 
     it('should throw error on non-ok response', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 401,
-        statusText: 'Unauthorized',
-        text: vi.fn().mockResolvedValue('Unauthorized: Invalid credentials')
-      });
+      mockFetch.mockResolvedValueOnce(
+        createMockErrorResponse(401, 'Unauthorized', 'Unauthorized: Invalid credentials')
+      );
 
       await expect(server.makeJiraRequest('/search/jql'))
         .rejects.toThrow('Authentication failed');
@@ -203,10 +228,7 @@ describe('JiraMCPServer', () => {
     };
 
     it('should fetch assigned issues without status filter', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockIssuesResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockIssuesResponse));
 
       const result = await server.getAssignedIssues({});
       const content = JSON.parse(result.content[0].text);
@@ -227,10 +249,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should fetch assigned issues with status filter', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockIssuesResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockIssuesResponse));
 
       const result = await server.getAssignedIssues({ status: 'In Progress', maxResults: 10 });
       
@@ -245,10 +264,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle maxResults parameter', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockIssuesResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockIssuesResponse));
 
       await server.getAssignedIssues({ maxResults: 25 });
       
@@ -259,10 +275,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should include issue URL in response', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockIssuesResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockIssuesResponse));
 
       const result = await server.getAssignedIssues({});
       const content = JSON.parse(result.content[0].text);
@@ -293,10 +306,7 @@ describe('JiraMCPServer', () => {
     };
 
     it('should search issues with JQL query', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockSearchResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockSearchResponse));
 
       const jql = 'project = "PROJ" AND status = "Done"';
       const result = await server.searchIssues({ jql });
@@ -314,10 +324,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle complex JQL queries with special characters', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockSearchResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockSearchResponse));
 
       const complexJql = 'text ~ "search term" AND labels IN (bug, "high-priority")';
       await server.searchIssues({ jql: complexJql, maxResults: 100 });
@@ -333,10 +340,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should include URL in search results', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockSearchResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockSearchResponse));
 
       const result = await server.searchIssues({ jql: 'test' });
       const content = JSON.parse(result.content[0].text);
@@ -384,10 +388,7 @@ describe('JiraMCPServer', () => {
     };
 
     it('should fetch detailed issue information', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockIssueDetails)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockIssueDetails));
 
       const result = await server.getIssueDetails({ issueKey: 'PROJ-999' });
       const content = JSON.parse(result.content[0].text);
@@ -411,10 +412,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle comments in issue details', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockIssueDetails)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockIssueDetails));
 
       const result = await server.getIssueDetails({ issueKey: 'PROJ-999' });
       const content = JSON.parse(result.content[0].text);
@@ -484,10 +482,7 @@ describe('JiraMCPServer', () => {
         }
       };
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(issueWithADF)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(issueWithADF));
 
       const result = await server.getIssueDetails({ issueKey: 'PROJ-ADF' });
       const content = JSON.parse(result.content[0].text);
@@ -519,10 +514,7 @@ describe('JiraMCPServer', () => {
         }
       };
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(minimalIssue)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(minimalIssue));
 
       const result = await server.getIssueDetails({ issueKey: 'PROJ-001' });
       const content = JSON.parse(result.content[0].text);
@@ -567,10 +559,7 @@ describe('JiraMCPServer', () => {
     };
 
     it('should fetch recent issues with default 7 days', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockRecentIssues)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockRecentIssues));
 
       const result = await server.getRecentIssues({});
       const content = JSON.parse(result.content[0].text);
@@ -586,10 +575,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should fetch recent issues with custom days parameter', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockRecentIssues)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockRecentIssues));
 
       const result = await server.getRecentIssues({ days: 14, maxResults: 100 });
       const content = JSON.parse(result.content[0].text);
@@ -607,10 +593,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should order issues by updated date descending', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockRecentIssues)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockRecentIssues));
 
       await server.getRecentIssues({ days: 30 });
       
@@ -677,10 +660,7 @@ describe('JiraMCPServer', () => {
     };
 
     it('should fetch tasks excluding completed by default', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockTasksResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockTasksResponse));
 
       const result = await server.getMyTasks({});
       const content = JSON.parse(result.content[0].text);
@@ -695,10 +675,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should include completed tasks when requested', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockTasksResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockTasksResponse));
 
       await server.getMyTasks({ includeCompleted: true });
       
@@ -714,10 +691,7 @@ describe('JiraMCPServer', () => {
       const mockDate = new Date('2024-01-15');
       vi.setSystemTime(mockDate);
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockTasksResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockTasksResponse));
 
       const result = await server.getMyTasks({});
       const content = JSON.parse(result.content[0].text);
@@ -737,10 +711,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should calculate task priorities and sort by them', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockTasksResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockTasksResponse));
 
       const result = await server.getMyTasks({});
       const content = JSON.parse(result.content[0].text);
@@ -758,10 +729,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should order JQL by priority, due date, and updated', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockTasksResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockTasksResponse));
 
       await server.getMyTasks({});
       
@@ -772,10 +740,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle maxResults parameter', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockTasksResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockTasksResponse));
 
       await server.getMyTasks({ maxResults: 200 });
       
@@ -818,10 +783,7 @@ describe('JiraMCPServer', () => {
     };
 
     it('should fetch issues for a specific project', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockProjectIssues)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockProjectIssues));
 
       const result = await server.getProjectIssues({ projectKey: 'PROJ' });
       const content = JSON.parse(result.content[0].text);
@@ -837,10 +799,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should filter by status when provided', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockProjectIssues)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockProjectIssues));
 
       await server.getProjectIssues({ projectKey: 'PROJ', status: 'Open' });
       
@@ -851,10 +810,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should order by priority and updated date', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockProjectIssues)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockProjectIssues));
 
       await server.getProjectIssues({ projectKey: 'PROJ' });
       
@@ -865,10 +821,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle maxResults parameter', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockProjectIssues)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockProjectIssues));
 
       await server.getProjectIssues({ projectKey: 'PROJ', maxResults: 75 });
       
@@ -879,16 +832,493 @@ describe('JiraMCPServer', () => {
     });
 
     it('should include issue URLs', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockProjectIssues)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockProjectIssues));
 
       const result = await server.getProjectIssues({ projectKey: 'PROJ' });
       const content = JSON.parse(result.content[0].text);
       
       expect(content.issues[0].url).toBe('https://test.atlassian.net/browse/PROJ-301');
       expect(content.issues[1].url).toBe('https://test.atlassian.net/browse/PROJ-302');
+    });
+  });
+
+  describe('createIssue', () => {
+    const validIssueData = {
+      projectKey: 'TEST',
+      issueType: 'Task',
+      summary: 'Test Issue Summary',
+      description: 'Test issue description',
+      priority: 'High',
+      assignee: 'test@example.com',
+      labels: ['label1', 'label2'],
+      components: ['Backend', 'Frontend']
+    };
+
+    const mockCreateResponse = {
+      id: '10001',
+      key: 'TEST-123',
+      self: 'https://test.atlassian.net/rest/api/3/issue/10001'
+    };
+
+    it('should create issue with all valid parameters', async () => {
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+      const result = await server.createIssue(validIssueData);
+      const content = JSON.parse(result.content[0].text);
+
+      expect(content.success).toBe(true);
+      expect(content.message).toBe('Issue TEST-123 created successfully');
+      expect(content.issue.key).toBe('TEST-123');
+      expect(content.issue.id).toBe('10001');
+      expect(content.issue.url).toBe('https://test.atlassian.net/browse/TEST-123');
+      expect(content.issue.project).toBe('TEST');
+      expect(content.issue.issueType).toBe('Task');
+      expect(content.issue.summary).toBe('Test Issue Summary');
+      expect(content.issue.status).toBe('Created');
+
+      // Verify the request was made correctly
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://test.atlassian.net/rest/api/3/issue',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json'
+          }),
+          body: expect.stringContaining('"project":{"key":"TEST"}')
+        })
+      );
+
+      // Verify the body contains all expected fields
+      const callArgs = mockFetch.mock.calls[0];
+      const requestBody = JSON.parse(callArgs[1].body);
+      
+      expect(requestBody.fields.project.key).toBe('TEST');
+      expect(requestBody.fields.issuetype.name).toBe('Task');
+      expect(requestBody.fields.summary).toBe('Test Issue Summary');
+      expect(requestBody.fields.description.type).toBe('doc');
+      expect(requestBody.fields.description.content[0].content[0].text).toBe('Test issue description');
+      expect(requestBody.fields.priority.name).toBe('High');
+      expect(requestBody.fields.assignee.emailAddress).toBe('test@example.com');
+      expect(requestBody.fields.labels).toEqual(['label1', 'label2']);
+      expect(requestBody.fields.components).toEqual([{ name: 'Backend' }, { name: 'Frontend' }]);
+    });
+
+    it('should create issue with only required parameters', async () => {
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+      const minimalData = {
+        projectKey: 'TEST',
+        issueType: 'Bug',
+        summary: 'Minimal issue'
+      };
+
+      const result = await server.createIssue(minimalData);
+      const content = JSON.parse(result.content[0].text);
+
+      expect(content.success).toBe(true);
+      expect(content.issue.key).toBe('TEST-123');
+
+      // Verify only required fields are sent
+      const callArgs = mockFetch.mock.calls[0];
+      const requestBody = JSON.parse(callArgs[1].body);
+      
+      expect(requestBody.fields.project.key).toBe('TEST');
+      expect(requestBody.fields.issuetype.name).toBe('Bug');
+      expect(requestBody.fields.summary).toBe('Minimal issue');
+      expect(requestBody.fields.description).toBeUndefined();
+      expect(requestBody.fields.priority).toBeUndefined();
+      expect(requestBody.fields.assignee).toBeUndefined();
+      expect(requestBody.fields.labels).toBeUndefined();
+      expect(requestBody.fields.components).toBeUndefined();
+    });
+
+    it('should handle assignee as account ID', async () => {
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+      const dataWithAccountId = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test with account ID',
+        assignee: '5b10ac8252382ca4d1234567'
+      };
+
+      await server.createIssue(dataWithAccountId);
+
+      const callArgs = mockFetch.mock.calls[0];
+      const requestBody = JSON.parse(callArgs[1].body);
+      
+      // Should use accountId when no @ symbol
+      expect(requestBody.fields.assignee.accountId).toBe('5b10ac8252382ca4d1234567');
+      expect(requestBody.fields.assignee.emailAddress).toBeUndefined();
+    });
+
+    it('should handle assignee as email address', async () => {
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+      const dataWithEmail = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test with email',
+        assignee: 'user@example.com'
+      };
+
+      await server.createIssue(dataWithEmail);
+
+      const callArgs = mockFetch.mock.calls[0];
+      const requestBody = JSON.parse(callArgs[1].body);
+      
+      // Should use emailAddress when @ symbol present
+      expect(requestBody.fields.assignee.emailAddress).toBe('user@example.com');
+      expect(requestBody.fields.assignee.accountId).toBeUndefined();
+    });
+
+    it('should filter out invalid labels and components', async () => {
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+      const dataWithInvalidArrays = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test invalid arrays',
+        labels: ['valid', '', null, 'another', '   ', undefined],
+        components: ['Component1', '', '   ', 'Component2']
+      };
+
+      await server.createIssue(dataWithInvalidArrays);
+
+      const callArgs = mockFetch.mock.calls[0];
+      const requestBody = JSON.parse(callArgs[1].body);
+      
+      expect(requestBody.fields.labels).toEqual(['valid', 'another']);
+      expect(requestBody.fields.components).toEqual([
+        { name: 'Component1' },
+        { name: 'Component2' }
+      ]);
+    });
+
+    it('should throw error when projectKey is missing', async () => {
+      const invalidData = {
+        issueType: 'Task',
+        summary: 'Test Summary'
+      };
+
+      await expect(server.createIssue(invalidData))
+        .rejects.toThrow('projectKey is required and must be a string');
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should throw error when projectKey is not a string', async () => {
+      const invalidData = {
+        projectKey: 123,
+        issueType: 'Task',
+        summary: 'Test Summary'
+      };
+
+      await expect(server.createIssue(invalidData))
+        .rejects.toThrow('projectKey is required and must be a string');
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should throw error when issueType is missing', async () => {
+      const invalidData = {
+        projectKey: 'TEST',
+        summary: 'Test Summary'
+      };
+
+      await expect(server.createIssue(invalidData))
+        .rejects.toThrow('issueType is required and must be a string');
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should throw error when issueType is not a string', async () => {
+      const invalidData = {
+        projectKey: 'TEST',
+        issueType: null,
+        summary: 'Test Summary'
+      };
+
+      await expect(server.createIssue(invalidData))
+        .rejects.toThrow('issueType is required and must be a string');
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should throw error when summary is missing', async () => {
+      const invalidData = {
+        projectKey: 'TEST',
+        issueType: 'Task'
+      };
+
+      await expect(server.createIssue(invalidData))
+        .rejects.toThrow('summary is required and must be a string');
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should throw error when summary is not a string', async () => {
+      const invalidData = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: ['array', 'summary']
+      };
+
+      await expect(server.createIssue(invalidData))
+        .rejects.toThrow('summary is required and must be a string');
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should handle project not found error', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createMockErrorResponse(400, 'Bad Request', '{"errorMessages":[],"errors":{"project":"Project not found"}}')
+      );
+
+      const data = {
+        projectKey: 'INVALID',
+        issueType: 'Task',
+        summary: 'Test'
+      };
+
+      await expect(server.createIssue(data))
+        .rejects.toThrow("Project 'INVALID' not found or you don't have permission to create issues in it");
+    });
+
+    it('should handle issue type not found error', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createMockErrorResponse(400, 'Bad Request', '{"errorMessages":[],"errors":{"issuetype":"Issue type not found"}}')
+      );
+
+      const data = {
+        projectKey: 'TEST',
+        issueType: 'InvalidType',
+        summary: 'Test'
+      };
+
+      await expect(server.createIssue(data))
+        .rejects.toThrow("Issue type 'InvalidType' not found in project 'TEST'");
+    });
+
+    it('should handle invalid assignee error', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createMockErrorResponse(400, 'Bad Request', '{"errorMessages":[],"errors":{"assignee":"User not found"}}')
+      );
+
+      const data = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test',
+        assignee: 'invalid@user.com'
+      };
+
+      await expect(server.createIssue(data))
+        .rejects.toThrow("Assignee 'invalid@user.com' not found");
+    });
+
+    it('should handle invalid priority error', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createMockErrorResponse(400, 'Bad Request', '{"errorMessages":[],"errors":{"priority":"Priority not found"}}')
+      );
+
+      const data = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test',
+        priority: 'InvalidPriority'
+      };
+
+      await expect(server.createIssue(data))
+        .rejects.toThrow("Priority 'InvalidPriority' not valid");
+    });
+
+    it('should handle invalid component error', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createMockErrorResponse(400, 'Bad Request', '{"errorMessages":[],"errors":{"components":"Component not found"}}')
+      );
+
+      const data = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test',
+        components: ['InvalidComponent']
+      };
+
+      await expect(server.createIssue(data))
+        .rejects.toThrow("One or more components not found in project 'TEST'");
+    });
+
+    it('should handle authentication failure', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createMockErrorResponse(401, 'Unauthorized', 'Authentication failed')
+      );
+
+      const data = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test'
+      };
+
+      await expect(server.createIssue(data))
+        .rejects.toThrow('Authentication failed');
+    });
+
+    it('should handle network errors', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Network error: ECONNREFUSED'));
+
+      const data = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test'
+      };
+
+      await expect(server.createIssue(data))
+        .rejects.toThrow('Network error: ECONNREFUSED');
+    });
+
+    it('should handle server errors with error messages array', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createMockErrorResponse(500, 'Internal Server Error', '{"errorMessages":["Server is temporarily unavailable","Please try again later"]}')
+      );
+
+      const data = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test'
+      };
+
+      await expect(server.createIssue(data))
+        .rejects.toThrow('Jira API error (500): Server is temporarily unavailable, Please try again later');
+    });
+
+    it('should handle empty labels and components arrays', async () => {
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+      const dataWithEmptyArrays = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test with empty arrays',
+        labels: [],
+        components: []
+      };
+
+      await server.createIssue(dataWithEmptyArrays);
+
+      const callArgs = mockFetch.mock.calls[0];
+      const requestBody = JSON.parse(callArgs[1].body);
+      
+      // Empty arrays should not be included in the request
+      expect(requestBody.fields.labels).toBeUndefined();
+      expect(requestBody.fields.components).toBeUndefined();
+    });
+
+    it('should handle non-array labels and components gracefully', async () => {
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+      const dataWithNonArrays = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test with non-arrays',
+        labels: 'not-an-array',
+        components: { not: 'an array' }
+      };
+
+      await server.createIssue(dataWithNonArrays);
+
+      const callArgs = mockFetch.mock.calls[0];
+      const requestBody = JSON.parse(callArgs[1].body);
+      
+      // Non-arrays should be ignored
+      expect(requestBody.fields.labels).toBeUndefined();
+      expect(requestBody.fields.components).toBeUndefined();
+    });
+
+    it('should create proper ADF format for description', async () => {
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+      const dataWithDescription = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test',
+        description: 'This is a test description\nWith multiple lines'
+      };
+
+      await server.createIssue(dataWithDescription);
+
+      const callArgs = mockFetch.mock.calls[0];
+      const requestBody = JSON.parse(callArgs[1].body);
+      
+      expect(requestBody.fields.description).toEqual({
+        type: 'doc',
+        version: 1,
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                text: 'This is a test description\nWith multiple lines'
+              }
+            ]
+          }
+        ]
+      });
+    });
+
+    it('should handle non-string description gracefully', async () => {
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+      const dataWithInvalidDescription = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test',
+        description: { not: 'a string' }
+      };
+
+      await server.createIssue(dataWithInvalidDescription);
+
+      const callArgs = mockFetch.mock.calls[0];
+      const requestBody = JSON.parse(callArgs[1].body);
+      
+      // Non-string description should be ignored
+      expect(requestBody.fields.description).toBeUndefined();
+    });
+
+    it('should handle various priority values', async () => {
+      const priorities = ['Highest', 'High', 'Medium', 'Low', 'Lowest'];
+      
+      for (const priority of priorities) {
+        mockFetch.mockResolvedValueOnce(createMockResponse(mockCreateResponse));
+
+        const data = {
+          projectKey: 'TEST',
+          issueType: 'Task',
+          summary: `Test with ${priority} priority`,
+          priority: priority
+        };
+
+        await server.createIssue(data);
+
+        const callArgs = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+        const requestBody = JSON.parse(callArgs[1].body);
+        
+        expect(requestBody.fields.priority.name).toBe(priority);
+      }
+    });
+
+    it('should handle generic API error', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createMockErrorResponse(400, 'Bad Request', 'Some unexpected error')
+      );
+
+      const data = {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        summary: 'Test'
+      };
+
+      await expect(server.createIssue(data))
+        .rejects.toThrow('Jira API error: 400 Bad Request. Response: Some unexpected error');
     });
   });
 
@@ -1292,10 +1722,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle get_assigned_issues tool call', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ total: 0, issues: [] })
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse({ total: 0, issues: [] }));
 
       const result = await toolHandler({
         params: {
@@ -1310,10 +1737,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle search_issues tool call', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ total: 1, issues: [] })
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse({ total: 1, issues: [] }));
 
       const result = await toolHandler({
         params: {
@@ -1328,9 +1752,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle get_issue_details tool call', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({
+      mockFetch.mockResolvedValueOnce(createMockResponse({
           key: 'TEST-1',
           fields: {
             summary: 'Test',
@@ -1338,8 +1760,7 @@ describe('JiraMCPServer', () => {
             issuetype: { name: 'Task' },
             project: { key: 'TEST', name: 'Test Project' }
           }
-        })
-      });
+        }));
 
       const result = await toolHandler({
         params: {
@@ -1354,10 +1775,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle get_recent_issues tool call', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ total: 5, issues: [] })
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse({ total: 5, issues: [] }));
 
       const result = await toolHandler({
         params: {
@@ -1372,10 +1790,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle get_my_tasks tool call', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ total: 2, issues: [] })
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse({ total: 2, issues: [] }));
 
       const result = await toolHandler({
         params: {
@@ -1390,10 +1805,7 @@ describe('JiraMCPServer', () => {
     });
 
     it('should handle get_project_issues tool call', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ total: 15, issues: [] })
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse({ total: 15, issues: [] }));
 
       const result = await toolHandler({
         params: {
@@ -1437,9 +1849,7 @@ describe('JiraMCPServer', () => {
   describe('Integration Tests', () => {
     it('should handle complete issue lifecycle', async () => {
       // Search for issues
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({
+      mockFetch.mockResolvedValueOnce(createMockResponse({
           total: 1,
           issues: [{
             key: 'PROJ-100',
@@ -1450,17 +1860,14 @@ describe('JiraMCPServer', () => {
               project: { name: 'Project' }
             }
           }]
-        })
-      });
+        }));
 
       const searchResult = await server.searchIssues({ jql: 'summary ~ "Found"' });
       const searchContent = JSON.parse(searchResult.content[0].text);
       expect(searchContent.issues[0].key).toBe('PROJ-100');
 
       // Get detailed information about the found issue
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({
+      mockFetch.mockResolvedValueOnce(createMockResponse({
           key: 'PROJ-100',
           fields: {
             summary: 'Found Issue',
@@ -1471,8 +1878,7 @@ describe('JiraMCPServer', () => {
             project: { key: 'PROJ', name: 'Project' },
             comment: { comments: [] }
           }
-        })
-      });
+        }));
 
       const detailResult = await server.getIssueDetails({ issueKey: 'PROJ-100' });
       const detailContent = JSON.parse(detailResult.content[0].text);
@@ -1497,28 +1903,19 @@ describe('JiraMCPServer', () => {
       };
 
       // Test different methods with maxResults
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockLargeResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockLargeResponse));
 
       const assignedResult = await server.getAssignedIssues({ maxResults: 50 });
       const assignedContent = JSON.parse(assignedResult.content[0].text);
       expect(assignedContent.issues).toHaveLength(50);
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockLargeResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockLargeResponse));
 
       const searchResult = await server.searchIssues({ jql: 'test', maxResults: 50 });
       const searchContent = JSON.parse(searchResult.content[0].text);
       expect(searchContent.issues).toHaveLength(50);
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue(mockLargeResponse)
-      });
+      mockFetch.mockResolvedValueOnce(createMockResponse(mockLargeResponse));
 
       const recentResult = await server.getRecentIssues({ maxResults: 50 });
       const recentContent = JSON.parse(recentResult.content[0].text);
