@@ -59,9 +59,10 @@ npm run dev:confluence
 ## Features
 
 ### Jira Integration
-- **Issue Management**: Search, filter, and retrieve detailed issue information
+- **Issue Management**: Search, filter, retrieve detailed issue information, and create new issues
 - **Task Organization**: Get assigned tasks with intelligent priority calculation
 - **Project Tracking**: Monitor project progress and recent activities
+- **Issue Creation**: Create new issues with full field customization (summary, description, priority, assignee, labels, components)
 - **Smart Prioritization**: Automatically sort tasks by urgency, due dates, and issue types
 - **Advanced Logging**: Structured JSON logs with configurable levels, automatic sensitive data masking, and daily rotation
 
@@ -81,6 +82,7 @@ npm run dev:confluence
 - `get_recent_issues` - Track recently updated issues
 - `get_my_tasks` - Get prioritized task list with due dates
 - `get_project_issues` - Monitor specific project activities
+- `create_issue` - Create new Jira issues with customizable fields including project, issue type, summary, description, priority, assignee, labels, and components
 
 ### Confluence Tools
 - `search_pages` - Search content across Confluence spaces

@@ -54,6 +54,7 @@ Both servers:
 - `get_recent_issues` - Get recently created or updated issues
 - `get_my_tasks` - Get all tasks assigned to me with priority and due date info
 - `get_project_issues` - Get issues from a specific project
+- `create_issue` - Create a new Jira issue with customizable fields (project, issue type, summary, description, priority, assignee, labels, components)
 
 ### Confluence Server Tools
 - `search_pages` - Search Confluence pages by title or content
