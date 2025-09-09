@@ -32,6 +32,7 @@ Create environment variables for the services you want to use:
 export JIRA_URL=https://yourcompany.atlassian.net
 export JIRA_EMAIL=your-email@company.com
 export JIRA_API_TOKEN=your-jira-api-token
+export LOG_LEVEL=DEBUG  # Optional: DEBUG, WARNING, or ERROR (default: DEBUG)
 ```
 
 #### For Confluence
@@ -62,6 +63,7 @@ npm run dev:confluence
 - **Task Organization**: Get assigned tasks with intelligent priority calculation
 - **Project Tracking**: Monitor project progress and recent activities
 - **Smart Prioritization**: Automatically sort tasks by urgency, due dates, and issue types
+- **Advanced Logging**: Structured JSON logs with configurable levels, automatic sensitive data masking, and daily rotation
 
 ### Confluence Integration
 - **Content Discovery**: Search pages across spaces with flexible queries
@@ -92,6 +94,30 @@ npm run dev:confluence
 - `update_page` - Modify existing pages
 - `create_task_page` - Generate structured task tracking pages
 
+## Logging
+
+The Jira server includes a comprehensive logging system that helps with debugging and monitoring:
+
+### Features
+- **Structured JSON Logging**: All logs are written in JSON format for easy parsing
+- **Configurable Log Levels**: Set `LOG_LEVEL` environment variable to `DEBUG`, `WARNING`, or `ERROR`
+- **Automatic Sensitive Data Masking**: API tokens, passwords, and authorization headers are automatically masked
+- **Daily Log Rotation**: New log files are created daily with format `jira-server-YYYY-MM-DD.log`
+- **Performance Optimized**: Asynchronous writes to prevent blocking operations
+- **Truncation of Large Payloads**: Automatically truncates large request/response data
+
+### Log Location
+Logs are stored in the `logs/` directory with the naming pattern:
+- Jira: `logs/jira-server-YYYY-MM-DD.log`
+
+### Configuration
+Set the log level via environment variable:
+```bash
+export LOG_LEVEL=DEBUG    # Most verbose - includes all operations
+export LOG_LEVEL=WARNING  # Only warnings and errors
+export LOG_LEVEL=ERROR    # Only critical errors
+```
+
 ## Development
 
 ### Testing
@@ -118,6 +144,7 @@ Both servers are built using the Model Context Protocol SDK and feature:
 - **Security**: Input validation and HTML escaping to prevent security issues
 - **Performance**: Parallel processing for bulk operations
 - **Testing**: Full test coverage with mocked API interactions
+- **Comprehensive Logging**: Structured JSON logging with automatic sensitive data masking, configurable log levels, and daily log rotation
 
 ## API Token Setup
 
