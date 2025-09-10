@@ -15,3 +15,5 @@ npm-debug.log
 CLAUDE.md
 .claude/
 .serena/
+.mcp.json
+.idea
