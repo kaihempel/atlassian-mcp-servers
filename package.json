@@ -14,7 +14,7 @@
   },
   "license": "MIT",
   "author": "Kai Hempel",
-  "type": "MCP Servers",
+  "type": "module",
   "main": "src/jira_server.js",
   "directories": {
     "doc": "docs",
