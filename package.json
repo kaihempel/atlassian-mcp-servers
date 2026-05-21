@@ -1,6 +1,6 @@
 {
   "name": "atlassian-mcp-servers",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "MCP Servers for Jira and Confluence integration",
   "keywords": [
     "MCP",

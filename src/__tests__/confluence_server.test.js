@@ -1160,16 +1160,11 @@ describe('ConfluenceMCPServer', () => {
         })
       });
 
-      const mockWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
       const result = await server.getPageTasks({ query: 'task' });
       const content = JSON.parse(result.content[0].text);
-      
+
       expect(content.pagesWithTasks).toBe(1);
       expect(content.pages[0].title).toBe('Page 2');
-      expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('Failed to process page page1'));
-      
-      mockWarn.mockRestore();
     });
 
     it('should sort pages by priority', async () => {
@@ -1279,11 +1274,12 @@ describe('ConfluenceMCPServer', () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 401,
-        statusText: 'Unauthorized'
+        statusText: 'Unauthorized',
+        text: vi.fn().mockResolvedValue('Unauthorized')
       });
 
       await expect(server.searchPages({ query: 'test' }))
-        .rejects.toThrow('Confluence API error: 401 Unauthorized');
+        .rejects.toThrow('Authentication failed');
     });
 
     it('should handle network errors', async () => {

@@ -321,7 +321,7 @@ export class JiraMCPServer {
         endpoint: endpointPath,
         statusCode: response.status,
         statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries())
+        headers: response.headers ? Object.fromEntries(response.headers.entries()) : {}
       });
 
       // Handle specific error cases

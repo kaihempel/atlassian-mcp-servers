@@ -311,9 +311,6 @@ class ConfluenceMCPServer {
   normalizeConfluenceUrl() {
     // Remove trailing slash if present
     this.confluenceUrl = this.confluenceUrl.replace(/\/$/, '');
-    
-    // Remove /wiki suffix if present (will be added as needed)
-    this.confluenceUrl = this.confluenceUrl.replace(/\/wiki$/, '');
   }
 
   getAuthHeaders() {
@@ -613,7 +610,7 @@ class ConfluenceMCPServer {
         endpoint: endpointPath,
         statusCode: response.status,
         statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries())
+        headers: response.headers ? Object.fromEntries(response.headers.entries()) : {}
       });
 
       if (response.status === 401) {
@@ -850,13 +847,7 @@ class ConfluenceMCPServer {
 
     await logger.debug('Fetching pages for current user', { limit });
 
-    // Get current user info first
-    const userResponse = await this.makeConfluenceRequest('/user/current');
-    const currentUser = userResponse.username || userResponse.userKey;
-
-    await logger.debug('Current user identified', { currentUser });
-
-    const cql = `creator = "${currentUser}" AND type = page ORDER BY lastmodified DESC`;
+    const cql = `creator = currentUser() AND type = page ORDER BY lastmodified DESC`;
 
     const response = await this.makeConfluenceRequest(
         `/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=content.space,content.history.lastUpdated,content.version`
@@ -874,7 +865,6 @@ class ConfluenceMCPServer {
     }));
 
     await logger.debug('User pages fetched', {
-      user: currentUser,
       totalResults: response.totalSize,
       returnedPages: pages.length
     });
@@ -884,7 +874,6 @@ class ConfluenceMCPServer {
         {
           type: 'text',
           text: JSON.stringify({
-            user: currentUser,
             total: response.totalSize,
             pages
           }, null, 2),
